@@ -36,12 +36,7 @@
 
 #include <wincon.h>
 #include <Windows.h>
-
-#ifndef _WIN32_WINNT_WINBLUE
-#define _WIN32_WINNT_WINBLUE                0x0603
-#endif
-
-#include <VersionHelpers.h>
+#include <gdiplus.h>
 
 //#include "dialogs/settings.h"    // for MdiSdiDlg
 
@@ -379,9 +374,29 @@ EXTERN_C {
     extern int ShellHasBeenRun();
 }
 
+struct GdiplusSession {
+    GdiplusSession()
+        : _token(0)
+    {
+        Gdiplus::GdiplusStartupInput startup_input;
+        if (Gdiplus::GdiplusStartup(&_token, &startup_input, NULL) != Gdiplus::Ok)
+            _token = 0;
+    }
+
+    ~GdiplusSession()
+    {
+        if (_token)
+            Gdiplus::GdiplusShutdown(_token);
+    }
+
+    ULONG_PTR _token;
+};
+
 int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nShowCmd)
 {
     CONTEXT("WinMain()");
+
+    GdiplusSession gdiplus_session;
 
     BOOL any_desktop_running = IsAnyDesktopRunning();
 
@@ -589,16 +604,8 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
         autostart = true;
 
     if (startup_desktop) {
-        if (IsWindowsVistaOrGreater()) {
-            // for Vista later
-            if (!SetShellReadyEvent(TEXT("ShellDesktopSwitchEvent")))
-                SetShellReadyEvent(TEXT("Global\\ShellDesktopSwitchEvent"));
-        } else {
-            // hide the XP login screen (Credit to Nicolas Escuder)
-            // another undocumented event: "Global\\msgina: ReturnToWelcome"
-            if (!SetShellReadyEvent(TEXT("msgina: ShellReadyEvent")))
-                SetShellReadyEvent(TEXT("Global\\msgina: ShellReadyEvent"));
-        }
+        if (!SetShellReadyEvent(TEXT("ShellDesktopSwitchEvent")))
+            SetShellReadyEvent(TEXT("Global\\ShellDesktopSwitchEvent"));
     }
 #ifdef ROSSHELL
     else

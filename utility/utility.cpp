@@ -33,6 +33,8 @@
 #include <time.h>
 #include <sstream>
 
+DWORD PASCAL ReadKernelVersion(DWORD *wdVers);
+
 
 DWORD WINAPI Thread::ThreadProc(void *para)
 {
@@ -61,7 +63,7 @@ void CenterWindow(HWND hwnd)
     if (owner)
         GetWindowRect(owner, &prt);
     else
-        SystemParametersInfo(SPI_GETWORKAREA, 0, &prt, 0);  //@@ GetDesktopWindow() wäre auch hilfreich.
+        SystemParametersInfo(SPI_GETWORKAREA, 0, &prt, 0);  //@@ GetDesktopWindow() wï¿½re auch hilfreich.
 
     SetWindowPos(hwnd, 0, (prt.left + prt.right + rt.left - rt.right) / 2,
                  (prt.top + prt.bottom + rt.top - rt.bottom) / 2, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER);
@@ -448,99 +450,36 @@ int find_window_class(LPCTSTR classname)
 
 String get_windows_version_str()
 {
-    OSVERSIONINFOEX osvi = {sizeof(OSVERSIONINFOEX)};
-    BOOL osvie_val;
-    String str;
+    DWORD wdVers[4] = {0};
+    ReadKernelVersion(wdVers);
 
-    if (!(osvie_val = GetVersionEx((OSVERSIONINFO *)&osvi))) {
-        osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
+    DWORD major = wdVers[0];
+    DWORD minor = wdVers[1];
+    DWORD build = wdVers[2];
 
-        if (!GetVersionEx((OSVERSIONINFO *)&osvi))
-            return TEXT("???");
-    }
-
-    switch (osvi.dwPlatformId) {
-    case VER_PLATFORM_WIN32_NT:
-#ifdef __REACTOS__  // This work around can be removed if ReactOS gets a unique version number.
-        str = TEXT("ReactOS");
-#else
-        if (osvi.dwMajorVersion <= 4)
-            str = TEXT("Microsoft Windows NT");
-        else if (osvi.dwMajorVersion == 5 && osvi.dwMinorVersion == 0)
-            str = TEXT("Microsoft Windows 2000");
-        else if (osvi.dwMajorVersion == 5 && osvi.dwMinorVersion == 1)
-            str = TEXT("Microsoft Windows XP");
-#endif
-
-        if (osvie_val) {
-            if (osvi.wProductType == VER_NT_WORKSTATION) {
-                if (osvi.wSuiteMask & VER_SUITE_PERSONAL)
-                    str += TEXT(" Personal");
-                else
-                    str += TEXT(" Professional");
-            } else if (osvi.wProductType == VER_NT_SERVER) {
-                if (osvi.wSuiteMask & VER_SUITE_DATACENTER)
-                    str += TEXT(" DataCenter Server");
-                else if (osvi.wSuiteMask & VER_SUITE_ENTERPRISE)
-                    str += TEXT(" Advanced Server");
-                else
-                    str += TEXT(" Server");
-            } else if (osvi.wProductType == VER_NT_DOMAIN_CONTROLLER) {
-                str += TEXT(" Domain Controller");
-            }
-        } else {
-            TCHAR type[80];
-            DWORD dwBufLen;
-            HKEY hkey;
-
-            if (!RegOpenKeyEx(HKEY_LOCAL_MACHINE, TEXT("SYSTEM\\CurrentControlSet\\Control\\ProductOptions"), 0, KEY_QUERY_VALUE, &hkey)) {
-                RegQueryValueEx(hkey, TEXT("ProductType"), NULL, NULL, (LPBYTE)type, &dwBufLen);
-                RegCloseKey(hkey);
-
-                if (!_tcsicmp(TEXT("WINNT"), type))
-                    str += TEXT(" Workstation");
-                else if (!_tcsicmp(TEXT("LANMANNT"), type))
-                    str += TEXT(" Server");
-                else if (!_tcsicmp(TEXT("SERVERNT"), type))
-                    str += TEXT(" Advanced Server");
-            }
-        }
-        break;
-
-    case VER_PLATFORM_WIN32_WINDOWS:
-        if (osvi.dwMajorVersion > 4 ||
-            (osvi.dwMajorVersion == 4 && osvi.dwMinorVersion > 0)) {
-            if (osvi.dwMinorVersion == 90)
-                str = TEXT("Microsoft Windows ME");
-            else
-                str = TEXT("Microsoft Windows 98");
-
-            if (osvi.szCSDVersion[1] == 'A')
-                str += TEXT(" SE");
-        } else {
-            str = TEXT("Microsoft Windows 95");
-
-            if (osvi.szCSDVersion[1] == 'B' || osvi.szCSDVersion[1] == 'C')
-                str += TEXT(" OSR2");
-        }
-        break;
-
-    case VER_PLATFORM_WIN32s:
-        str = TEXT("Microsoft Win32s");
-
-    default:
+    if (major == 0 && minor == 0)
         return TEXT("???");
-    }
+
+    String str;
+    if (major >= 10 && build >= 22000)
+        str = TEXT("Microsoft Windows 11");
+    else if (major >= 10)
+        str = TEXT("Microsoft Windows 10");
+    else if (major == 6 && minor == 3)
+        str = TEXT("Microsoft Windows 8.1");
+    else if (major == 6 && minor == 2)
+        str = TEXT("Microsoft Windows 8");
+    else if (major == 6 && minor == 1)
+        str = TEXT("Microsoft Windows 7");
+    else if (major == 6 && minor == 0)
+        str = TEXT("Microsoft Windows Vista");
+    else if (major == 5 && minor == 1)
+        str = TEXT("Microsoft Windows XP");
+    else
+        str = TEXT("Microsoft Windows");
 
     String vstr;
-
-    if (osvi.dwMajorVersion <= 4)
-        vstr.printf(TEXT(" Version %d.%d %s Build %d"),
-                    osvi.dwMajorVersion, osvi.dwMinorVersion,
-                    osvi.szCSDVersion, osvi.dwBuildNumber & 0xFFFF);
-    else
-        vstr.printf(TEXT(" %s (Build %d)"), osvi.szCSDVersion, osvi.dwBuildNumber & 0xFFFF);
-
+    vstr.printf(TEXT(" Version %lu.%lu (Build %lu)"), major, minor, build);
     return str + vstr;
 }
 

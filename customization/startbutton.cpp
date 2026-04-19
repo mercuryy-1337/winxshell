@@ -2,6 +2,7 @@
 #include <precomp.h>
 #include <Uxtheme.h>
 #include "startbutton.h"
+#include "../utility/taskbar_draw.h"
 
 
 void PictureButton2::DrawItem(LPDRAWITEMSTRUCT dis)
@@ -28,7 +29,30 @@ void PictureButton2::DrawItem(LPDRAWITEMSTRUCT dis)
         drawBrush = _hHotBrush;
     }
 
-    if (_flat) {
+    if (taskbar_draw::IsModernTaskbarEnabled()) {
+        FillRect(dis->hDC, &dis->rcItem, _hBrush);
+
+        RECT highlight_rect = taskbar_draw::DeflateRectCopy(dis->rcItem, DPI_SX(2), DPI_SY(4));
+        highlight_rect.bottom -= DPI_SY(4);
+        if (highlight_rect.bottom > highlight_rect.top) {
+            if (_hovered) {
+                taskbar_draw::FillRoundedRect(
+                    dis->hDC,
+                    highlight_rect,
+                    taskbar_draw::GetHighlightRadius(),
+                    taskbar_draw::GetHoverColor(),
+                    taskbar_draw::GetHoverAlpha());
+            }
+            if (dis->itemState & ODS_SELECTED) {
+                taskbar_draw::FillRoundedRect(
+                    dis->hDC,
+                    highlight_rect,
+                    taskbar_draw::GetHighlightRadius(),
+                    taskbar_draw::GetHighlightColor(),
+                    taskbar_draw::GetHighlightAlpha());
+            }
+        }
+    } else if (_flat) {
         FillRect(dis->hDC, &dis->rcItem, drawBrush);
 
         if (style & BS_FLAT)    // Only with BS_FLAT set, there will be drawn a frame without highlight.

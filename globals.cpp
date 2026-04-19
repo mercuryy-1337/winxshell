@@ -1,6 +1,5 @@
 
 #include <Windows.h>
-#include <VersionHelpers.h>
 #include "globals.h"
 #include "vendor/json.h"
 #include "jconfig/jcfg.h"
@@ -155,7 +154,7 @@ void ExplorerGlobals::getSystemInfo()
     TCHAR locale_buf[LOCALE_NAME_MAX_LENGTH] = {0};
 
     g_Globals._winver = FmtString(TEXT("%d.%d"), HIWORD(dwVer), LOWORD(dwVer));
-    g_Globals._isNT5 = !IsWindowsVistaOrGreater();
+    g_Globals._isNT5 = FALSE;
     g_Globals._langID.printf(TEXT("%d"), GetSystemDefaultLangID());
 
     g_Globals._locale = TEXT("en-US");

@@ -44,6 +44,17 @@
 
 
 #define PM_GET_LAST_ACTIVE  (WM_APP+0x1D)
+#define PM_QUERY_GROUP_STATE (WM_APP+0x1E)
+
+
+struct TaskbarGroupStateQuery {
+    LPCTSTR _app_key;
+    HWND    _primary_hwnd;
+    int     _window_count;
+    BOOL    _active;
+    HWND   *_windows;
+    int     _window_capacity;
+};
 
 
 /// internal task bar button management entry
@@ -57,10 +68,18 @@ struct TaskBarEntry {
     int     _btn_idx;
     String  _title;
     BYTE    _fsState;
+    float   _hover_progress;
+    float   _active_progress;
+    DWORD   _pid;
+    int     _window_group_count;
+    HWND    _primary_hwnd;
+    String  _app_key;
+    bool    _pinned;
+    vector<HWND> _windows;
 };
 
 /// map for managing the task bar buttons, mapped by application window handle
-struct TaskBarMap : public map<HWND, TaskBarEntry> {
+struct TaskBarMap : public map<String, TaskBarEntry> {
     ~TaskBarMap();
 
     iterator find_id(int id);
@@ -87,6 +106,12 @@ protected:
     static RECT _icon_area;
     bool        _no_task_title;
     bool        _task_close_button;
+    bool        _rounded_highlight;
+    bool        _centered_layout;
+    bool        _animate_highlights;
+    bool        _animation_timer_running;
+    int         _preferred_btn_width;
+    set<String> _pinned_app_keys;
     const UINT WM_SHELLHOOK;
 
     void InitTaskbarStyle();
@@ -103,4 +128,10 @@ protected:
     void    ApplyBackgroundStyle();
     void    Refresh();
     void    ResizeButtons();
+    int     GetPreferredWidth() const;
+    bool    HasRunningButtons() const;
+    bool    IsAnimationRequired() const;
+    bool    AdvanceAnimations();
+    void    RefreshAnimationTimer(bool invalidate = true);
+    void    SyncAnimationState(bool snap_to_target);
 };

@@ -29,10 +29,15 @@
 #include <precomp.h>
 #include <WinUser.h>
 #include "taskbar.h"
+#include "quicklaunch.h"
+#include "taskbar_identity.h"
 #include "traynotify.h" // for NOTIFYAREA_WIDTH_DEF
+#include "../utility/taskbar_draw.h"
 
 #include <Uxtheme.h>
+#include <dwmapi.h>
 #pragma comment(lib, "uxtheme.lib")
+#pragma comment(lib, "dwmapi.lib")
 
 
 DynamicFct<BOOL (WINAPI *)(HWND hwnd)> g_SetTaskmanWindow(TEXT("user32"), "SetTaskmanWindow");
@@ -43,16 +48,17 @@ DynamicFct<BOOL (WINAPI *)(HWND hwnd)> g_DeregisterShellHookWindow(TEXT("user32"
 DynamicFct<BOOL (WINAPI*)(HWND hWnd, DWORD dwType)> g_RegisterShellHook(TEXT("shell32"), (LPCSTR)0xb5);
 
 #define ID_TIMER_DESTORYTHUMBNAIL 101
+#define ID_TIMER_ANIMATEBUTTONS   102
 extern void InitThumbnailWindow(HWND taskbar, HWND toolbar);
-extern int DrawThumbnailWindow(HINSTANCE hInstance, HWND hWndSrc, LPCTSTR lpClassName, LPCTSTR lpWindowName, int id);
+extern int DrawThumbnailWindows(HINSTANCE hInstance, const HWND *hwnds, int hwnd_count, HWND hwndToolbar, int buttonIndex);
 extern void DestoryThumbnailWindow();
+extern bool IsThumbnailCursorInRegion();
 
 extern void TaskbarTransparency(HWND hwnd, const TCHAR *mode, UINT transparency, COLORREF color);
 
 // constants for RegisterShellHook()
 #define RSH_UNREGISTER          0
 #define RSH_REGISTER            1
-#define RSH_PROGMAN             2
 #define RSH_TASKMGR             3
 
 
@@ -61,7 +67,113 @@ extern void TaskbarTransparency(HWND hwnd, const TCHAR *mode, UINT transparency,
 #define GCL_HICONSM GCLP_HICONSM
 #endif
 
+#ifndef TBCDRF_NOEDGES
+#define TBCDRF_NOEDGES       0x00010000
+#endif
+
+#ifndef TBCDRF_NOOFFSET
+#define TBCDRF_NOOFFSET      0x00040000
+#endif
+
+#ifndef TBCDRF_NOETCHEDEFFECT
+#define TBCDRF_NOETCHEDEFFECT 0x00100000
+#endif
+
+#ifndef TBCDRF_NOBACKGROUND
+#define TBCDRF_NOBACKGROUND  0x00400000
+#endif
+
+#ifndef CDRF_USECDCOLORS
+#define CDRF_USECDCOLORS     0x00800000
+#endif
+
 static HBRUSH hbrTaskLine = NULL;
+
+static void BuildPinnedTaskbarAppKeySet(set<String> &keys)
+{
+    keys.clear();
+
+    if (!JCFG2_DEF("JS_QUICKLAUNCH", "hide_fileexplorer", false).ToBool())
+        keys.insert(taskbar_identity::GetExplorerAppKey());
+
+    if (JCFG2_DEF("JS_QUICKLAUNCH", "hide_usericons", false).ToBool())
+        return;
+
+    SpecialFolderFSPath app_data(CSIDL_APPDATA, NULL);
+    String pinned_dir;
+    pinned_dir.printf(TEXT("%s\\%s"), (LPCTSTR)app_data, QUICKLAUNCH_FOLDER);
+
+    String search_pattern = pinned_dir + TEXT("\\*");
+    WIN32_FIND_DATA find_data;
+    HANDLE find_handle = FindFirstFile(search_pattern.c_str(), &find_data);
+    if (find_handle == INVALID_HANDLE_VALUE)
+        return;
+
+    do {
+        if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            continue;
+        if (find_data.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN)
+            continue;
+        if (!_tcsicmp(find_data.cFileName, TEXT("Shows Desktop.lnk")))
+            continue;
+        if (!_tcsicmp(find_data.cFileName, TEXT("Window Switcher.lnk")))
+            continue;
+
+        String shortcut_path = pinned_dir + TEXT("\\") + find_data.cFileName;
+        String app_key = taskbar_identity::GetShortcutAppKey(shortcut_path.c_str());
+        if (!app_key.empty())
+            keys.insert(app_key);
+    } while (FindNextFile(find_handle, &find_data));
+
+    FindClose(find_handle);
+}
+
+static bool IsExcludedTaskbarClass(LPCTSTR class_name)
+{
+    if (!class_name || !*class_name)
+        return false;
+
+    return !_tcsicmp(class_name, TEXT("Progman")) ||
+        !_tcsicmp(class_name, TEXT("WorkerW")) ||
+        !_tcsicmp(class_name, TEXT("Shell_TrayWnd")) ||
+        !_tcsicmp(class_name, TEXT("Shell_SecondaryTrayWnd")) ||
+        !_tcsicmp(class_name, TEXT("MSTaskSwWClass")) ||
+        !_tcsicmp(class_name, TEXT("dwmTaskThumbnailWnd"));
+}
+
+static void DrawTaskbarButtonHighlight(HDC hdc, const RECT &item_rect, float hover_progress, float active_progress)
+{
+    int btn_h = item_rect.bottom - item_rect.top;
+    int hl_pad_y = DPI_SY(4);
+    int hl_margin_x = DPI_SX(1);
+    RECT highlight_rect = {
+        item_rect.left + hl_margin_x,
+        item_rect.top + hl_pad_y,
+        item_rect.right - hl_margin_x,
+        item_rect.bottom - hl_pad_y
+    };
+
+    if (highlight_rect.bottom <= highlight_rect.top)
+        return;
+
+    if (hover_progress > 0.0f) {
+        taskbar_draw::FillRoundedRect(
+            hdc,
+            highlight_rect,
+            taskbar_draw::GetHighlightRadius(),
+            taskbar_draw::GetHoverColor(),
+            taskbar_draw::LerpAlpha(0, taskbar_draw::GetHoverAlpha(), hover_progress));
+    }
+
+    if (active_progress > 0.0f) {
+        taskbar_draw::FillRoundedRect(
+            hdc,
+            highlight_rect,
+            taskbar_draw::GetHighlightRadius(),
+            taskbar_draw::GetHighlightColor(),
+            taskbar_draw::LerpAlpha(0, taskbar_draw::GetHighlightAlpha(), active_progress));
+    }
+}
 
 TaskBarEntry::TaskBarEntry()
 {
@@ -71,6 +183,12 @@ TaskBarEntry::TaskBarEntry()
     _used = 0;
     _btn_idx = 0;
     _fsState = 0;
+    _hover_progress = 0.0f;
+    _active_progress = 0.0f;
+    _pid = 0;
+    _window_group_count = 0;
+    _primary_hwnd = 0;
+    _pinned = false;
 }
 
 TaskBarMap::~TaskBarMap()
@@ -86,17 +204,26 @@ RECT TaskBar::_icon_area = { 1, 0, TASKBAR_ICON_SIZE + 4, DESKTOPBARBAR_HEIGHT -
 
 void TaskBar::InitTaskbarStyle()
 {
+    _centered_layout = taskbar_draw::IsCenteredEnabled();
+    _rounded_highlight = taskbar_draw::IsRoundedHighlightEnabled();
+    _animate_highlights = taskbar_draw::IsAnimationEnabled();
+    _animation_timer_running = false;
+    _preferred_btn_width = taskbar_draw::GetButtonSlotWidth();
+
     _no_task_title = false;
     _task_close_button = false;
     bool show_task_line = false;
     COLORREF clrTaskLine = TASKBAR_TASKLINECOLOR();
 
-    if (JCFG2_DEF("JS_TASKBAR", "no_task_title", false).ToBool() != FALSE) {
+    bool prefer_icon_only = _centered_layout || _rounded_highlight;
+    if (JCFG2_DEF("JS_TASKBAR", "no_task_title", prefer_icon_only).ToBool() != FALSE) {
         _no_task_title = true;
-        _icon_area.right = TASKBAR_ICON_SIZE + 8 + 4;
-        _icon_area.bottom = DESKTOPBARBAR_HEIGHT - 4;
+        _icon_area.left = 0;
+        _icon_area.top = 0;
+        _icon_area.right = _preferred_btn_width;
+        _icon_area.bottom = DESKTOPBARBAR_HEIGHT;
     } else {
-        if (JCFG2_DEF("JS_TASKBAR", "task_close_button", false).ToBool() != FALSE) {
+        if (!_rounded_highlight && JCFG2_DEF("JS_TASKBAR", "task_close_button", false).ToBool() != FALSE) {
             _task_close_button = true;
         }
     }
@@ -109,7 +236,9 @@ void TaskBar::InitTaskbarStyle()
 
     String msstyle_taskbutton = JCFG2_DEF("JS_TASKBAR", "msstyle_taskbutton", TEXT("auto")).ToString();
     if (msstyle_taskbutton == TEXT("auto")) {
-        if (_task_close_button) {
+        if (_rounded_highlight) {
+            msstyle_taskbutton = TEXT("");
+        } else if (_task_close_button) {
             msstyle_taskbutton = TEXT("BB");
         } else if (TASKBAR_THEMESTYLE().compare(TEXT("light")) == 0) {
             msstyle_taskbutton = TEXT("BB");
@@ -205,8 +334,9 @@ LRESULT TaskBar::Init(LPCREATESTRUCT pcs)
     SendMessage(_htoolbar, TB_SETBUTTONWIDTH, 0, MAKELPARAM(TASKBUTTONWIDTH_MAX, TASKBUTTONWIDTH_MAX));
 
     if (_no_task_title) {
-        // show only icons
+        // show only icons — full-slot bitmaps, no text display
         SendMessage(_htoolbar, TB_SETEXTENDEDSTYLE, 0, TBSTYLE_EX_MIXEDBUTTONS);
+        SendMessage(_htoolbar, TB_SETPADDING, 0, MAKELPARAM(0, 0));
     } else {
         if (_task_close_button) {
             SendMessage(_htoolbar, TB_SETEXTENDEDSTYLE, 0, TBSTYLE_EX_DRAWDDARROWS);
@@ -215,7 +345,9 @@ LRESULT TaskBar::Init(LPCREATESTRUCT pcs)
     SendMessage(_htoolbar, TB_SETBITMAPSIZE, 0, MAKELPARAM(_icon_area.right, _icon_area.bottom));
 
     String msstyle_taskbutton = JCFG2_DEF("JS_TASKBAR", "msstyle_taskbutton", TEXT("")).ToString();
-    if (msstyle_taskbutton != TEXT("")) {
+    if (_rounded_highlight) {
+        SetWindowTheme(_htoolbar, L"", L"");
+    } else if (msstyle_taskbutton != TEXT("")) {
         SetWindowTheme(_htoolbar, msstyle_taskbutton, L"Toolbar"); //TaskBar
     }
 
@@ -232,8 +364,8 @@ LRESULT TaskBar::Init(LPCREATESTRUCT pcs)
     metrics.cbSize = sizeof(TBMETRICS);
     metrics.dwMask = TBMF_BARPAD | TBMF_BUTTONSPACING;
     metrics.cxBarPad = 0;
-    metrics.cyBarPad = JCFG_TB(2, "padding-top").ToInt();
-    metrics.cxButtonSpacing = 1;
+    metrics.cyBarPad = (_no_task_title && _rounded_highlight) ? 0 : JCFG_TB(2, "padding-top").ToInt();
+    metrics.cxButtonSpacing = (_no_task_title && _rounded_highlight) ? 0 : 1;
     metrics.cyButtonSpacing = 0;
 
     SendMessage(_htoolbar, TB_SETMETRICS, 0, (LPARAM)&metrics);
@@ -254,20 +386,12 @@ LRESULT TaskBar::Init(LPCREATESTRUCT pcs)
         SetTimer(_hwnd, 0, 200, NULL);
     }
 
-    if (g_RegisterShellHook)
-    {
-        OSVERSIONINFO osInfo;
-        osInfo.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
-        GetVersionEx(&osInfo);
-
+    if (g_RegisterShellHook) {
         (*g_RegisterShellHook)(NULL, RSH_REGISTER);
-
-        if (osInfo.dwPlatformId == VER_PLATFORM_WIN32_WINDOWS)
-            (*g_RegisterShellHook)(_hwnd, RSH_PROGMAN);
-        else
-            (*g_RegisterShellHook)(_hwnd, RSH_TASKMGR);
+        (*g_RegisterShellHook)(_hwnd, RSH_TASKMGR);
     }
     Refresh();
+    SyncAnimationState(true);
 
     _thumbnail = JCfg_TaskThumbnailEnabled();
     if (_thumbnail) {
@@ -284,15 +408,25 @@ LRESULT TaskBar::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
     case WM_SIZE:
         SendMessage(_htoolbar, WM_SIZE, 0, 0);
         ResizeButtons();
+        RefreshAnimationTimer();
         // ApplyBackgroundStyle();
         break;
 
     case WM_TIMER:
         if (wparam == 0) {
             Refresh();
+        } else if (wparam == ID_TIMER_ANIMATEBUTTONS) {
+            if (!AdvanceAnimations()) {
+                KillTimer(_hwnd, ID_TIMER_ANIMATEBUTTONS);
+                _animation_timer_running = false;
+            }
+            InvalidateRect(_htoolbar, NULL, FALSE);
         } else if (wparam == ID_TIMER_DESTORYTHUMBNAIL) {
             KillTimer(_hwnd, ID_TIMER_DESTORYTHUMBNAIL);
-            DestoryThumbnailWindow();
+            if (!IsThumbnailCursorInRegion())
+                DestoryThumbnailWindow();
+            else
+                SetTimer(_hwnd, ID_TIMER_DESTORYTHUMBNAIL, 200, NULL);
         }
         return 0;
 
@@ -308,6 +442,61 @@ LRESULT TaskBar::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
 
     case PM_GET_LAST_ACTIVE:
         return (LRESULT)(HWND)_last_foreground_wnd;
+
+    case PM_QUERY_GROUP_STATE: {
+        TaskbarGroupStateQuery *query = (TaskbarGroupStateQuery *)lparam;
+        if (!query || !query->_app_key)
+            return 0;
+
+        TaskBarMap::iterator found = _map.find(String(query->_app_key));
+        if (found == _map.end() || !found->second._used) {
+            query->_primary_hwnd = 0;
+            query->_window_count = 0;
+            query->_active = FALSE;
+            if (query->_windows && query->_window_capacity > 0)
+                query->_windows[0] = 0;
+            return 0;
+        }
+
+        query->_primary_hwnd = found->second._primary_hwnd;
+        query->_window_count = (int)found->second._windows.size();
+
+        // Check active by comparing against actual foreground window
+        HWND fg = GetForegroundWindow();
+        BOOL is_active = FALSE;
+        for (size_t wi = 0; wi < found->second._windows.size(); ++wi) {
+            if (found->second._windows[wi] == fg) {
+                is_active = TRUE;
+                break;
+            }
+            // Also check if foreground is owned by a group window
+            if (fg) {
+                HWND owner = GetWindow(fg, GW_OWNER);
+                if (owner == found->second._windows[wi]) {
+                    is_active = TRUE;
+                    break;
+                }
+            }
+        }
+        query->_active = is_active;
+
+        if (query->_windows && query->_window_capacity > 0) {
+            int copy_count = query->_window_count;
+            if (copy_count > query->_window_capacity)
+                copy_count = query->_window_capacity;
+
+            for (int index = 0; index < copy_count; ++index)
+                query->_windows[index] = found->second._windows[index];
+
+            if (copy_count < query->_window_capacity)
+                query->_windows[copy_count] = 0;
+        }
+
+        return query->_window_count;
+    }
+
+    case PM_GET_WIDTH:
+        return GetPreferredWidth();
 
     case WM_SYSCOLORCHANGE:
         SendMessage(_htoolbar, WM_SYSCOLORCHANGE, 0, 0);
@@ -346,7 +535,8 @@ int TaskBar::Command(int id, int code)
 
     if (found != _map.end()) {
         if (code == WM_CLOSE) {
-            PostMessage(found->first, WM_SYSCOMMAND, SC_CLOSE, 0);
+            if (found->second._primary_hwnd)
+                PostMessage(found->second._primary_hwnd, WM_SYSCOMMAND, SC_CLOSE, 0);
         } else {
             ActivateApp(found);
         }
@@ -407,15 +597,93 @@ int TaskBar::Notify(int id, NMHDR *pnmh)
             LPNMTBCUSTOMDRAW lptbcd = (LPNMTBCUSTOMDRAW)pnmh;
             switch (lptbcd->nmcd.dwDrawStage) {
             case CDDS_PREPAINT:
+                RefreshAnimationTimer(false);
                 return CDRF_NOTIFYITEMDRAW;
             case CDDS_ITEMPREPAINT: {
                 lptbcd->clrText = TASKBAR_TEXTCOLOR();
-#define CDRF_USECDCOLORS 0x00800000
+                if (_rounded_highlight) {
+                    TaskBarMap::iterator found = _map.find_id((int)lptbcd->nmcd.dwItemSpec);
+                    if (found == _map.end() && (int)lptbcd->nmcd.dwItemSpec >= 0) {
+                        TBBUTTON button = {0};
+                        if (SendMessage(_htoolbar, TB_GETBUTTON, lptbcd->nmcd.dwItemSpec, (LPARAM)&button) != -1)
+                            found = _map.find_id(button.idCommand);
+                    }
+
+                    float hover_progress = 0.0f;
+                    float active_progress = 0.0f;
+                    if (found != _map.end()) {
+                        hover_progress = found->second._hover_progress;
+                        active_progress = found->second._active_progress;
+                    }
+                    if (!_animate_highlights) {
+                        hover_progress = ((lptbcd->nmcd.uItemState & CDIS_HOT) == CDIS_HOT) ? 1.0f : 0.0f;
+                        active_progress = ((lptbcd->nmcd.uItemState & CDIS_CHECKED) == CDIS_CHECKED) ? 1.0f : 0.0f;
+                    }
+
+                    DrawTaskbarButtonHighlight(lptbcd->nmcd.hdc, lptbcd->nmcd.rc, hover_progress, active_progress);
+                    return TBCDRF_NOBACKGROUND | TBCDRF_NOEDGES | TBCDRF_NOOFFSET |
+                        TBCDRF_NOETCHEDEFFECT | CDRF_NOTIFYPOSTPAINT | CDRF_USECDCOLORS;
+                }
                 return CDRF_NOTIFYPOSTPAINT | CDRF_USECDCOLORS; //Windows vista later
             }
             case CDDS_ITEMPOSTPAINT: {
-                if (hbrTaskLine) {
-                    lptbcd->nmcd.hdc;
+                if (g_Globals._isDebug) {
+                    _log_(FmtString(TEXT("TaskBar::Notify(NM_CUSTOMDRAW) %d"), lptbcd->nmcd.uItemState));
+                }
+
+                TaskBarMap::iterator found = _map.find_id((int)lptbcd->nmcd.dwItemSpec);
+                if (found == _map.end() && (int)lptbcd->nmcd.dwItemSpec >= 0) {
+                    TBBUTTON button = {0};
+                    if (SendMessage(_htoolbar, TB_GETBUTTON, lptbcd->nmcd.dwItemSpec, (LPARAM)&button) != -1) {
+                        found = _map.find_id(button.idCommand);
+                    }
+                }
+                float hover_progress = 0.0f;
+                float active_progress = 0.0f;
+                if (found != _map.end()) {
+                    hover_progress = found->second._hover_progress;
+                    active_progress = found->second._active_progress;
+                }
+                if (!_animate_highlights) {
+                    hover_progress = ((lptbcd->nmcd.uItemState & CDIS_HOT) == CDIS_HOT) ? 1.0f : 0.0f;
+                    active_progress = ((lptbcd->nmcd.uItemState & CDIS_CHECKED) == CDIS_CHECKED) ? 1.0f : 0.0f;
+                }
+
+                if (_rounded_highlight) {
+                    // Draw running-app dot indicator(s)
+                    COLORREF indicator_color = TASKBAR_TASKLINECOLOR();
+                    if (indicator_color != MAXDWORD) {
+                        int wnd_count = 1;
+                        if (found != _map.end())
+                            wnd_count = found->second._window_group_count;
+
+                        BYTE dot_alpha = taskbar_draw::LerpAlpha(
+                            taskbar_draw::GetIndicatorIdleAlpha(),
+                            taskbar_draw::GetIndicatorActiveAlpha(),
+                            active_progress);
+                        if (!_animate_highlights) {
+                            dot_alpha = ((lptbcd->nmcd.uItemState & CDIS_CHECKED) == CDIS_CHECKED)
+                                ? taskbar_draw::GetIndicatorActiveAlpha()
+                                : taskbar_draw::GetIndicatorIdleAlpha();
+                        }
+
+                        int dot_d = DPI_SX(4);
+                        int dot_r = dot_d / 2;
+                        int dot_y = lptbcd->nmcd.rc.bottom - DPI_SY(5) - dot_d;
+                        int btn_cx = (lptbcd->nmcd.rc.left + lptbcd->nmcd.rc.right) / 2;
+
+                        if (wnd_count >= 2) {
+                            int gap = DPI_SX(3);
+                            RECT d1 = { btn_cx - gap / 2 - dot_d, dot_y, btn_cx - gap / 2, dot_y + dot_d };
+                            RECT d2 = { btn_cx + (gap + 1) / 2, dot_y, btn_cx + (gap + 1) / 2 + dot_d, dot_y + dot_d };
+                            taskbar_draw::FillRoundedRect(lptbcd->nmcd.hdc, d1, dot_r, indicator_color, dot_alpha);
+                            taskbar_draw::FillRoundedRect(lptbcd->nmcd.hdc, d2, dot_r, indicator_color, dot_alpha);
+                        } else {
+                            RECT dot = { btn_cx - dot_r, dot_y, btn_cx + dot_r, dot_y + dot_d };
+                            taskbar_draw::FillRoundedRect(lptbcd->nmcd.hdc, dot, dot_r, indicator_color, dot_alpha);
+                        }
+                    }
+                } else if (hbrTaskLine) {
                     RECT rect = lptbcd->nmcd.rc;
                     rect.top = DESKTOPBARBAR_HEIGHT - 4;
                     rect.bottom = rect.top + 2;
@@ -423,21 +691,9 @@ int TaskBar::Notify(int id, NMHDR *pnmh)
                         ((lptbcd->nmcd.uItemState & CDIS_HOT) != CDIS_HOT)) {
                         rect.left += 4;
                         rect.right -= 4;
-                    } else {
-                        if (_task_close_button) {
-                            rect.left -= 2;
-                            rect.right += 2;
-                        }
-                    }
-
-                    if (g_Globals._isDebug) {
-                        _log_(FmtString(TEXT("TaskBar::Notify(NM_CUSTOMDRAW) %d"), lptbcd->nmcd.uItemState));
-                    }
-
-                    if (lptbcd->nmcd.uItemState == 0 && _thumbnail) {
-                        KillTimer(_hwnd, ID_TIMER_DESTORYTHUMBNAIL);
-                        SetTimer(_hwnd, ID_TIMER_DESTORYTHUMBNAIL, 500, NULL);
-                        //DestoryThumbnailWindow();
+                    } else if (_task_close_button) {
+                        rect.left -= 2;
+                        rect.right += 2;
                     }
                     FillRect(lptbcd->nmcd.hdc, &rect, hbrTaskLine);
                 }
@@ -448,7 +704,18 @@ int TaskBar::Notify(int id, NMHDR *pnmh)
             }
         }
         case TBN_HOTITEMCHANGE: {
+            RefreshAnimationTimer();
             if (_thumbnail) {
+                LPNMTBHOTITEM hotitem = (LPNMTBHOTITEM)pnmh;
+
+                // If hot item is leaving (no new item), schedule preview cleanup
+                if (hotitem->dwFlags & HICF_LEAVING) {
+                    // Don't immediately destroy — let the thumbnail module check
+                    // if cursor moved to the preview popup
+                    SetTimer(_hwnd, ID_TIMER_DESTORYTHUMBNAIL, 300, NULL);
+                    return super::Notify(id, pnmh);
+                }
+
                 TBBUTTONINFO btninfo;
                 TaskBarMap::iterator it;
                 Point pt(GetMessagePos());
@@ -462,12 +729,11 @@ int TaskBar::Notify(int id, NMHDR *pnmh)
                 if (idx >= 0 &&
                     SendMessage(_htoolbar, TB_GETBUTTONINFO, idx, (LPARAM)&btninfo) != -1 &&
                     (it = _map.find_id(btninfo.idCommand)) != _map.end()) {
-                    //TaskBarEntry& entry = it->second;
+                    KillTimer(_hwnd, ID_TIMER_DESTORYTHUMBNAIL);
 
                     _log_(FmtString(TEXT("TaskBar::Notify(TBN_HOTITEMCHANGE) %d"), idx));
-                    //ActivateApp(it, false, false);  // don't restore minimized windows on right button click
-                    HWND hTaskWindow = it->first;
-                    DrawThumbnailWindow(g_Globals._hInstance, hTaskWindow, NULL, NULL, idx);
+                    if (!it->second._windows.empty())
+                        DrawThumbnailWindows(g_Globals._hInstance, &it->second._windows[0], (int)it->second._windows.size(), _htoolbar, idx);
                 }
             }
             return super::Notify(id, pnmh);
@@ -476,6 +742,15 @@ int TaskBar::Notify(int id, NMHDR *pnmh)
         case TBN_GETINFOTIPW:
             if (_thumbnail) {
                 KillTimer(_hwnd, ID_TIMER_DESTORYTHUMBNAIL);
+            }
+            if (_no_task_title) {
+                // Provide tooltip text for icon-only buttons
+                NMTBGETINFOTIP *tip = (NMTBGETINFOTIP *)pnmh;
+                TaskBarMap::iterator it = _map.find_id(tip->iItem);
+                if (it != _map.end() && tip->pszText && tip->cchTextMax > 0) {
+                    _tcsncpy(tip->pszText, it->second._title.c_str(), tip->cchTextMax - 1);
+                    tip->pszText[tip->cchTextMax - 1] = 0;
+                }
             }
             break;
         default:
@@ -489,7 +764,9 @@ int TaskBar::Notify(int id, NMHDR *pnmh)
 
 void TaskBar::ActivateApp(TaskBarMap::iterator it, bool can_minimize, bool can_restore)
 {
-    HWND hwnd = it->first;
+    HWND hwnd = it->second._primary_hwnd;
+    if (!hwnd || !IsWindow(hwnd))
+        return;
 
     bool minimize_it = can_minimize && !IsIconic(hwnd) &&
                        (hwnd == GetForegroundWindow() || hwnd == _last_foreground_wnd);
@@ -517,8 +794,11 @@ MF_BYCOMMAND | ((cond)?MF_ENABLED:MF_GRAYED))
 
 void TaskBar::ShowAppSystemMenu(TaskBarMap::iterator it)
 {
-    HWND hTaskWindow = it->first;
-    HMENU hmenu = GetSystemMenu(it->first, FALSE);
+    HWND hTaskWindow = it->second._primary_hwnd;
+    if (!hTaskWindow || !IsWindow(hTaskWindow))
+        return;
+
+    HMENU hmenu = GetSystemMenu(hTaskWindow, FALSE);
 
     if (hmenu) {
         POINT pt;
@@ -641,32 +921,87 @@ BOOL CALLBACK TaskBar::EnumWndProc(HWND hwnd, LPARAM lparam)
         //do not show 'Windows 10's Metro Window
         if (!GetClassName(hwnd, strbuffer, BUFFER_LEN))
             strbuffer[0] = '\0';
+        if (IsExcludedTaskbarClass(strbuffer))
+            return TRUE;
         str_title = strbuffer;
-        if (str_title.find(TEXT("ApplicationFrameWindow")) != String::npos ||
-            str_title.find(TEXT("Windows.UI.Core.CoreWindow")) != String::npos) {
+
+        // Skip cloaked UWP windows (invisible ApplicationFrameHost placeholders)
+        if (str_title.find(TEXT("ApplicationFrameWindow")) != String::npos) {
+            DWORD cloaked = 0;
+            if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
+                return TRUE;
+            // Uncloaked ApplicationFrameWindow = real visible UWP app, let it through
+        }
+        if (str_title.find(TEXT("Windows.UI.Core.CoreWindow")) != String::npos) {
             return TRUE;
         }
 
-        TaskBarMap::iterator found = pThis->_map.find(hwnd);
-        int last_id = 0;
+        String app_key = taskbar_identity::GetWindowAppKey(hwnd);
+        if (app_key.empty())
+            return TRUE;
 
-        if (found != pThis->_map.end()) {
-            last_id = found->second._id;
+        bool pinned_group = pThis->_pinned_app_keys.find(app_key) != pThis->_pinned_app_keys.end();
+        TaskBarMap::iterator found = pThis->_map.find(app_key);
+        if (found == pThis->_map.end()) {
+            TaskBarEntry entry;
+            entry._app_key = app_key;
+            entry._title = title;
+            entry._pinned = pinned_group;
+            pThis->_map[app_key] = entry;
+            found = pThis->_map.find(app_key);
+        }
 
-            if (!last_id)
-                found->second._id = pThis->_next_id++;
-        } else {
+        TaskBarEntry &entry = found->second;
+        BYTE old_state = entry._fsState;
+        String old_title = entry._title;
+
+        ++entry._used;
+        entry._windows.push_back(hwnd);
+        entry._window_group_count = (int)entry._windows.size();
+        entry._pinned = pinned_group;
+        GetWindowThreadProcessId(hwnd, &entry._pid);
+
+        HWND foreground = GetForegroundWindow();
+        bool is_active_window = (hwnd == foreground);
+        // Also check if foreground is an owned dialog of this window
+        if (!is_active_window && foreground) {
+            HWND owner = GetWindow(foreground, GW_OWNER);
+            if (owner == hwnd)
+                is_active_window = true;
+        }
+
+        bool prefer_primary = !entry._primary_hwnd || !IsWindow(entry._primary_hwnd);
+        if (!prefer_primary && is_active_window)
+            prefer_primary = true;
+        if (!prefer_primary && entry._primary_hwnd && IsIconic(entry._primary_hwnd) && !IsIconic(hwnd))
+            prefer_primary = true;
+        if (!prefer_primary && entry._title.empty() && title[0])
+            prefer_primary = true;
+
+        if (prefer_primary) {
+            entry._primary_hwnd = hwnd;
+            if (title[0])
+                entry._title = title;
+        } else if (title[0] && entry._title.empty()) {
+            entry._title = title;
+        }
+
+        // Only set active flags on the FIRST active window found, not accumulate
+        if (is_active_window) {
+            entry._fsState = TBSTATE_ENABLED | TBSTATE_PRESSED | TBSTATE_CHECKED;
+            pThis->_last_foreground_wnd = hwnd;
+        }
+
+        if (!entry._pinned && entry._id == 0) {
             HBITMAP hbmp = NULL;
             HICON hIcon = NULL;
             BOOL delete_icon = FALSE;
 
-            if (str_title == TEXT("ConsoleWindowClass")) {
+            if (str_title == TEXT("ConsoleWindowClass"))
                 hIcon = g_Globals._icon_cache.get_icon(ICID_CMDEXE).get_hicon();
-            }
 
-            if (!hIcon) {
+            if (!hIcon)
                 hIcon = get_window_icon_big(hwnd);
-            }
 
             if (!hIcon) {
                 hIcon = LoadIcon(0, IDI_APPLICATION);
@@ -675,83 +1010,40 @@ BOOL CALLBACK TaskBar::EnumWndProc(HWND hwnd, LPARAM lparam)
 
             if (hIcon) {
                 RECT rect = _icon_area;
-
-#ifdef _DEBUG
-                ICONINFO iconInfo;
-                GetIconInfo(hIcon, &iconInfo);
-
-                BITMAP biIcon;
-                GetObject(iconInfo.hbmColor, sizeof(BITMAP), &biIcon);
-#endif
                 hbmp = create_bitmap_from_icon(hIcon, TASKBAR_BRUSH(), WindowCanvas(pThis->_htoolbar), TASKBAR_ICON_SIZE, rect);
                 if (delete_icon)
-                    DestroyIcon(hIcon); // some icons can be freed, some not - so ignore any error return of DestroyIcon()
-            } else
-                hbmp = 0;
+                    DestroyIcon(hIcon);
+            }
 
             TBADDBITMAP ab = {0, (UINT_PTR)hbmp};
-            int bmp_idx = (int)SendMessage(pThis->_htoolbar, TB_ADDBITMAP, 1, (LPARAM)&ab);
-
-            TaskBarEntry entry;
-
-            entry._id = pThis->_next_id++;
+            entry._bmp_idx = (int)SendMessage(pThis->_htoolbar, TB_ADDBITMAP, 1, (LPARAM)&ab);
             entry._hbmp = hbmp;
-            entry._bmp_idx = bmp_idx;
-            entry._title = title;
+            entry._id = pThis->_next_id++;
 
-            pThis->_map[hwnd] = entry;
-            found = pThis->_map.find(hwnd);
-            _log_(FmtString(TEXT("TaskBar::AddButton %s"), str_title.c_str()));
-        }
+            TBBUTTON btn = { -2, 0, entry._fsState, BTNS_BUTTON, {0, 0}, 0, 0 };
+            if (pThis->_task_close_button)
+                btn.fsStyle = BTNS_DROPDOWN;
+            if (entry._title.length() && !pThis->_no_task_title)
+                btn.iString = (INT_PTR)entry._title.c_str();
 
-        TBBUTTON btn = { -2/*I_IMAGENONE*/, 0, TBSTATE_ENABLED/*|TBSTATE_ELLIPSES*/, BTNS_BUTTON, {0, 0}, 0, 0};
-        if (pThis->_task_close_button) {
-            btn.fsStyle = BTNS_DROPDOWN;
-        }
-        TaskBarEntry &entry = found->second;
-
-        ++entry._used;
-        btn.idCommand = entry._id;
-
-        HWND foreground = GetForegroundWindow();
-        HWND foreground_owner = GetWindow(foreground, GW_OWNER);
-
-        if (hwnd == foreground || hwnd == foreground_owner) {
-            btn.fsState |= TBSTATE_PRESSED | TBSTATE_CHECKED;
-            pThis->_last_foreground_wnd = hwnd;
-        }
-
-        if (!last_id) {
-            // create new toolbar buttons for new windows
-            if (title[0])
-                btn.iString = (INT_PTR)title;
-
+            btn.idCommand = entry._id;
             btn.iBitmap = entry._bmp_idx;
             entry._btn_idx = (int)SendMessage(pThis->_htoolbar, TB_BUTTONCOUNT, 0, 0);
-
             SendMessage(pThis->_htoolbar, TB_INSERTBUTTON, entry._btn_idx, (LPARAM)&btn);
 
-            pThis->ResizeButtons();
-        } else {
-            // refresh attributes of existing buttons
-            if (btn.fsState != entry._fsState)
-                SendMessage(pThis->_htoolbar, TB_SETSTATE, entry._id, MAKELONG(btn.fsState, 0));
+            _log_(FmtString(TEXT("TaskBar::AddButton %s"), str_title.c_str()));
+        } else if (!entry._pinned && entry._id) {
+            if (entry._fsState != old_state)
+                SendMessage(pThis->_htoolbar, TB_SETSTATE, entry._id, MAKELONG(entry._fsState, 0));
 
-            if (entry._title != title) {
+            if (entry._title != old_title) {
                 TBBUTTONINFO info;
-
                 info.cbSize = sizeof(TBBUTTONINFO);
                 info.dwMask = TBIF_TEXT;
-                info.pszText = title;
-
+                info.pszText = (LPTSTR)entry._title.c_str();
                 SendMessage(pThis->_htoolbar, TB_SETBUTTONINFO, entry._id, (LPARAM)&info);
-
-                entry._title.~String();
-                entry._title = title;
             }
         }
-
-        entry._fsState = btn.fsState;
 
 #ifdef __REACTOS__  // now handled by activating the ARW_HIDE flag with SystemParametersInfo(SPI_SETMINIMIZEDMETRICS)
         // move minimized windows out of sight
@@ -790,24 +1082,38 @@ void TaskBar::ApplyBackgroundStyle()
 
 void TaskBar::Refresh()
 {
-    for (TaskBarMap::iterator it = _map.begin(); it != _map.end(); ++it)
+    BuildPinnedTaskbarAppKeySet(_pinned_app_keys);
+
+    for (TaskBarMap::iterator it = _map.begin(); it != _map.end(); ++it) {
         it->second._used = 0;
+        it->second._window_group_count = 0;
+        it->second._primary_hwnd = 0;
+        it->second._fsState = TBSTATE_ENABLED;
+        it->second._pinned = false;
+        it->second._windows.clear();
+    }
 
     EnumWindows(EnumWndProc, (LPARAM)this);
     //EnumDesktopWindows(GetThreadDesktop(GetCurrentThreadId()), EnumWndProc, (LPARAM)_htoolbar);
 
     set<int> btn_idx_to_delete;
     set<HBITMAP> hbmp_to_delete;
+    set<String> keys_to_delete;
 
     for (TaskBarMap::iterator it = _map.begin(); it != _map.end(); ++it) {
         TaskBarEntry &entry = it->second;
 
-        if (!entry._used && entry._id) {
-            // store button indexes to remove
+        if ((!entry._used || entry._pinned) && entry._id) {
             btn_idx_to_delete.insert(entry._btn_idx);
             hbmp_to_delete.insert(entry._hbmp);
             entry._id = 0;
+            entry._btn_idx = 0;
+            entry._bmp_idx = 0;
+            entry._hbmp = 0;
         }
+
+        if (!entry._used)
+            keys_to_delete.insert(it->first);
     }
 
     if (!btn_idx_to_delete.empty()) {
@@ -842,22 +1148,32 @@ void TaskBar::Refresh()
 
         }
 
-        for (set<HBITMAP>::iterator it = hbmp_to_delete.begin(); it != hbmp_to_delete.end(); ++it) {
-            HBITMAP hbmp = *it;
-#if 0
-            TBREPLACEBITMAP tbrepl = {0, (UINT_PTR)hbmp, 0, 0};
-            SendMessage(_htoolbar, TB_REPLACEBITMAP, 0, (LPARAM)&tbrepl);
-#endif
-            DeleteObject(hbmp);
+        for (set<HBITMAP>::iterator it = hbmp_to_delete.begin(); it != hbmp_to_delete.end(); ++it)
+            if (*it)
+                DeleteObject(*it);
+    }
 
-            for (TaskBarMap::iterator it = _map.begin(); it != _map.end(); ++it)
-                if (it->second._hbmp == hbmp) {
-                    _map.erase(it);
-                    break;
-                }
+    for (set<String>::const_iterator it = keys_to_delete.begin(); it != keys_to_delete.end(); ++it)
+        _map.erase(*it);
+
+    ResizeButtons();
+
+    if (!_animate_highlights)
+        SyncAnimationState(true);
+    RefreshAnimationTimer();
+
+    HWND hwnd_quicklaunch = GetDlgItem(GetParent(_hwnd), IDW_QUICKLAUNCHBAR);
+    if (hwnd_quicklaunch)
+        PostMessage(hwnd_quicklaunch, PM_UPDATE_DESKTOP, 0, 0);
+
+    // Trigger parent resize so centered layout recalculates with new button count
+    if (_centered_layout) {
+        HWND parent = GetParent(_hwnd);
+        if (parent) {
+            RECT rc;
+            GetClientRect(parent, &rc);
+            PostMessage(parent, PM_RESIZE_CHILDREN, rc.right, rc.bottom);
         }
-
-        ResizeButtons();
     }
 }
 
@@ -872,12 +1188,24 @@ TaskBarMap::iterator TaskBarMap::find_id(int id)
 
 void TaskBar::ResizeButtons()
 {
-    int btns = (int)_map.size();
+    int btns = 0;
+    for (TaskBarMap::const_iterator it = _map.begin(); it != _map.end(); ++it)
+        if (it->second._id)
+            ++btns;
 
     if (btns > 0) {
         int bar_width = ClientRect(_hwnd).right;
-        if (_task_close_button) bar_width -= btns * 20;
-        int btn_width = (bar_width / btns) - 3;
+        if (_task_close_button)
+            bar_width -= btns * 20;
+
+        int btn_width = _preferred_btn_width;
+        if (_no_task_title || _centered_layout) {
+            int fit_width = bar_width / btns;
+            if (fit_width < btn_width)
+                btn_width = fit_width;
+        } else {
+            btn_width = (bar_width / btns) - 3;
+        }
 
         if (btn_width < TASKBUTTONWIDTH_MIN)
             btn_width = TASKBUTTONWIDTH_MIN;
@@ -889,6 +1217,131 @@ void TaskBar::ResizeButtons()
 
             SendMessage(_htoolbar, TB_SETBUTTONWIDTH, 0, MAKELONG(btn_width, btn_width));
             SendMessage(_htoolbar, TB_AUTOSIZE, 0, 0);
+        }
+    }
+}
+
+int TaskBar::GetPreferredWidth() const
+{
+    int btns = 0;
+    for (TaskBarMap::const_iterator it = _map.begin(); it != _map.end(); ++it)
+        if (it->second._id)
+            ++btns;
+
+    if (btns <= 0)
+        return 0;
+
+    int btn_width = _preferred_btn_width;
+    if (_last_btn_width > 0 && _last_btn_width < btn_width)
+        btn_width = _last_btn_width;
+
+    return btns * btn_width;
+}
+
+bool TaskBar::HasRunningButtons() const
+{
+    for (TaskBarMap::const_iterator it = _map.begin(); it != _map.end(); ++it)
+        if (it->second._id)
+            return true;
+
+    return false;
+}
+
+bool TaskBar::IsAnimationRequired() const
+{
+    if (!_animate_highlights || !_htoolbar)
+        return false;
+
+    int hot_index = (int)SendMessage(_htoolbar, TB_GETHOTITEM, 0, 0);
+    for (TaskBarMap::const_iterator it = _map.begin(); it != _map.end(); ++it) {
+        if (!it->second._id)
+            continue;
+
+        LONG state = (LONG)SendMessage(_htoolbar, TB_GETSTATE, it->second._id, 0);
+        float target_hover = it->second._btn_idx == hot_index ? 1.0f : 0.0f;
+        float target_active = ((state & TBSTATE_CHECKED) || (state & TBSTATE_PRESSED)) ? 1.0f : 0.0f;
+
+        float hover_diff = it->second._hover_progress - target_hover;
+        if (hover_diff < 0.0f)
+            hover_diff = -hover_diff;
+
+        float active_diff = it->second._active_progress - target_active;
+        if (active_diff < 0.0f)
+            active_diff = -active_diff;
+
+        if (hover_diff > 0.01f || active_diff > 0.01f)
+            return true;
+    }
+
+    return false;
+}
+
+bool TaskBar::AdvanceAnimations()
+{
+    if (!_animate_highlights || !_htoolbar)
+        return false;
+
+    bool needs_more = false;
+    float blend = taskbar_draw::GetAnimationBlend();
+    int hot_index = (int)SendMessage(_htoolbar, TB_GETHOTITEM, 0, 0);
+
+    for (TaskBarMap::iterator it = _map.begin(); it != _map.end(); ++it) {
+        if (!it->second._id)
+            continue;
+
+        LONG state = (LONG)SendMessage(_htoolbar, TB_GETSTATE, it->second._id, 0);
+        float target_hover = it->second._btn_idx == hot_index ? 1.0f : 0.0f;
+        float target_active = ((state & TBSTATE_CHECKED) || (state & TBSTATE_PRESSED)) ? 1.0f : 0.0f;
+
+        it->second._hover_progress = taskbar_draw::EaseTowards(it->second._hover_progress, target_hover, blend);
+        it->second._active_progress = taskbar_draw::EaseTowards(it->second._active_progress, target_active, blend);
+
+        float hover_diff = it->second._hover_progress - target_hover;
+        if (hover_diff < 0.0f)
+            hover_diff = -hover_diff;
+
+        float active_diff = it->second._active_progress - target_active;
+        if (active_diff < 0.0f)
+            active_diff = -active_diff;
+
+        if (hover_diff > 0.01f || active_diff > 0.01f)
+            needs_more = true;
+    }
+
+    return needs_more;
+}
+
+void TaskBar::RefreshAnimationTimer(bool invalidate)
+{
+    if (!_animate_highlights)
+        return;
+
+    if (IsAnimationRequired()) {
+        if (!_animation_timer_running) {
+            SetTimer(_hwnd, ID_TIMER_ANIMATEBUTTONS, 16, NULL);
+            _animation_timer_running = true;
+        }
+        if (invalidate)
+            InvalidateRect(_htoolbar, NULL, FALSE);
+    } else if (_animation_timer_running) {
+        KillTimer(_hwnd, ID_TIMER_ANIMATEBUTTONS);
+        _animation_timer_running = false;
+    }
+}
+
+void TaskBar::SyncAnimationState(bool snap_to_target)
+{
+    if (!_htoolbar)
+        return;
+
+    int hot_index = (int)SendMessage(_htoolbar, TB_GETHOTITEM, 0, 0);
+    for (TaskBarMap::iterator it = _map.begin(); it != _map.end(); ++it) {
+        LONG state = (LONG)SendMessage(_htoolbar, TB_GETSTATE, it->second._id, 0);
+        float target_hover = it->second._btn_idx == hot_index ? 1.0f : 0.0f;
+        float target_active = ((state & TBSTATE_CHECKED) || (state & TBSTATE_PRESSED)) ? 1.0f : 0.0f;
+        if (snap_to_target || !_animate_highlights) {
+            it->second._hover_progress = target_hover;
+            it->second._active_progress = target_active;
         }
     }
 }

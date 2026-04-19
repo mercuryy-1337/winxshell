@@ -132,7 +132,11 @@
         "bkmode": "opaque",
         "transparency": 100,
         "task_line_color": [238, 238, 238],
-        "textcolor": "0xffffff"
+        "textcolor": "0xffffff",
+        "highlight_color": [255, 255, 255],
+        "hover_color": [255, 255, 255],
+        "highlight_alpha": 44,
+        "hover_alpha": 28
       }
     },
     "dark": {
@@ -142,7 +146,11 @@
         "bkmode": "transparent",
         "transparency": 64,
         "task_line_color": [238, 238, 238],
-        "textcolor": "0xffffff"
+        "textcolor": "0xffffff",
+        "highlight_color": [255, 255, 255],
+        "hover_color": [255, 255, 255],
+        "highlight_alpha": 44,
+        "hover_alpha": 28
       }
     },
     "light": {
@@ -153,7 +161,11 @@
         "bkmode": "acrylic",
         "transparency": 100,
         "task_line_color": [0, 120, 215],
-        "textcolor": "0x000000"
+        "textcolor": "0x000000",
+        "highlight_color": [0, 0, 0],
+        "hover_color": [0, 0, 0],
+        "highlight_alpha": 26,
+        "hover_alpha": 14
       }
     }
   },
@@ -161,16 +173,22 @@
     "::显示": true,
     "::使用小图标": false,
     "::显示任务缩略图": true,
-    "::显示任务关闭按钮": true,
-    "::隐藏任务标题": false,
+    "::显示任务关闭按钮": false,
+    "::隐藏任务标题": true,
     "::使用Rebar": false,
     "::主题": "dark",
-    "::高度": 40
+    "::高度": 48,
+    "centered": true,
+    "rounded_highlight": true,
+    "animations": true,
+    "animation_duration": 200,
+    "button_width": 44
   },
   "::开始菜单": {
     "::开始按钮按下背景色" : [0, 100, 180],
     "::开始按钮设定值说明": "theme;empty;custom;files",
     "::开始按钮": "theme",
+    "start_width": 44,
     "::开始按钮动作": "",
     "::隐藏顶部菜单": false,
     "::隐藏程序菜单": false,
@@ -198,10 +216,11 @@
     "::单行最大图标数": 20,
     "#::第3方文件管理器": "",
     "::第3方文件管理器启动参数": "",
-    "::隐藏显示桌面图标": false,
+    "::隐藏显示桌面图标": true,
     "::隐藏资源管理器图标": false,
-    "::隐藏分隔符": false,
+    "::隐藏分隔符": true,
     "::隐藏用户图标": false,
+    "button_width": 44,
     "::位置": "Microsoft\\Internet Explorer\\Quick Launch\\User Pinned\\TaskBar"
   },
   "::托盘区域": {

@@ -36,13 +36,37 @@
 #include "startmenu.h"
 #include "traynotify.h"
 #include "quicklaunch.h"
+#include "../utility/taskbar_draw.h"
 
 #include "../dialogs/settings.h"
 #include "../customization/startbutton.h"
 
+#ifndef TBCDRF_NOEDGES
+#define TBCDRF_NOEDGES       0x00010000
+#endif
+
+#ifndef TBCDRF_NOOFFSET
+#define TBCDRF_NOOFFSET      0x00040000
+#endif
+
+#ifndef TBCDRF_NOETCHEDEFFECT
+#define TBCDRF_NOETCHEDEFFECT 0x00100000
+#endif
+
+#ifndef TBCDRF_NOBACKGROUND
+#define TBCDRF_NOBACKGROUND  0x00400000
+#endif
+
+#ifndef CDRF_USECDCOLORS
+#define CDRF_USECDCOLORS     0x00800000
+#endif
+
 
 DesktopBar::DesktopBar(HWND hwnd)
     :  super(hwnd),
+    _start_button_width(0),
+    _start_button_gap(0),
+    _centered_layout(false),
     _traySndVolIcon(hwnd, ID_TRAY_VOLUME),
     _trayNetworkIcon(hwnd, ID_TRAY_NETWORK)
 {
@@ -119,12 +143,23 @@ LRESULT DesktopBar::Init(LPCREATESTRUCT pcs)
     DrawText(canvas, start_str.c_str(), -1, &rect, DT_SINGLELINE | DT_CALCRECT);
 
     _deskbar_pos_y = DESKTOPBAR_TOP;
+    _centered_layout = taskbar_draw::IsCenteredEnabled() && JCFG_TB(2, "userebar").ToBool() == FALSE;
+
     int start_btn_width = DESKTOPBARBAR_HEIGHT + 8; //DPI_SX((TASKBAR_ICON_SIZE + rect.right + (TASKBAR_ICON_SIZE / 4)));
+    if (_centered_layout) {
+        start_btn_width = taskbar_draw::GetButtonSlotWidth();
+    }
 
     string_t start_icon = JCFG2_DEF("JS_STARTMENU", "start_icon", TEXT("custom")).ToString();
     int start_btn_padding = JCFG2_DEF("JS_STARTMENU", "start_padding", 0).ToInt();
-    start_btn_width = JCFG2_DEF("JS_STARTMENU", "start_width", start_btn_width).ToInt();
-    _taskbar_pos = start_btn_width + DPI_SX(start_btn_padding) + 1;
+    Value configured_start_width = JCFG2("JS_STARTMENU", "start_width");
+    if (configured_start_width.GetType() == IntVal) {
+        _start_button_width = _centered_layout ? DPI_SX(configured_start_width.ToInt()) : configured_start_width.ToInt();
+    } else {
+        _start_button_width = start_btn_width;
+    }
+    _start_button_gap = DPI_SX(start_btn_padding) + 1;
+    _taskbar_pos = _start_button_width + _start_button_gap;
 
     {
         string_t def_value = TEXT("");
@@ -151,7 +186,7 @@ LRESULT DesktopBar::Init(LPCREATESTRUCT pcs)
     wc.lpszClassName = TEXT("Start");
     wc.hInstance = NULL;
     RegisterClass(&wc);
-    HWND hwndStart = SWButton(_hwnd, start_str.c_str(), 0, 0, start_btn_width, DESKTOPBARBAR_HEIGHT, IDC_START, WS_VISIBLE | WS_CHILD | BS_OWNERDRAW);
+    HWND hwndStart = SWButton(_hwnd, start_str.c_str(), 0, 0, _start_button_width, DESKTOPBARBAR_HEIGHT, IDC_START, WS_VISIBLE | WS_CHILD | BS_OWNERDRAW);
     SetWindowFont(hwndStart, g_Globals._hDefaultFont, FALSE);
 
     UINT idStartIcon = IDI_STARTMENU_B;
@@ -226,7 +261,7 @@ LRESULT DesktopBar::Init(LPCREATESTRUCT pcs)
             WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN |
             RBS_VARHEIGHT | RBS_AUTOSIZE | RBS_DBLCLKTOGGLE | RBS_REGISTERDROP |
             CCS_NODIVIDER | CCS_NOPARENTALIGN | CCS_TOP | TBSTYLE_LIST | TBSTYLE_TOOLTIPS | TBSTYLE_WRAPABLE,
-            start_btn_width + 1, 1, 0, 0, _hwnd, 0, g_Globals._hInstance, 0);
+            _start_button_width + 1, 1, 0, 0, _hwnd, 0, g_Globals._hInstance, 0);
 
         REBARBANDINFO rbBand;
         rbBand.cbSize = sizeof(REBARBANDINFO);
@@ -312,6 +347,12 @@ LRESULT StartButton::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
 
     // re-target mouse move messages while moving the mouse cursor through the start menu
     case WM_MOUSEMOVE:
+        if (!_hovered) {
+            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, _hwnd, 0 };
+            TrackMouseEvent(&tme);
+            _hovered = true;
+            InvalidateRect(_hwnd, NULL, FALSE);
+        }
         if (GetCapture() == _hwnd) {
             POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
 
@@ -322,6 +363,13 @@ LRESULT StartButton::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
                 ScreenToClient(hwnd, &pt);
                 SendMessage(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(pt.x, pt.y));
             }
+        }
+        break;
+
+    case WM_MOUSELEAVE:
+        if (_hovered) {
+            _hovered = false;
+            InvalidateRect(_hwnd, NULL, FALSE);
         }
         break;
 
@@ -632,6 +680,46 @@ default: def:
 
 int DesktopBar::Notify(int id, NMHDR *pnmh)
 {
+    if (_hwndQuickLaunch && pnmh->hwndFrom == _hwndQuickLaunch && pnmh->code == NM_CUSTOMDRAW && taskbar_draw::IsRoundedHighlightEnabled()) {
+        LPNMTBCUSTOMDRAW lptbcd = (LPNMTBCUSTOMDRAW)pnmh;
+        switch (lptbcd->nmcd.dwDrawStage) {
+        case CDDS_PREPAINT:
+            return CDRF_NOTIFYITEMDRAW;
+        case CDDS_ITEMPREPAINT:
+            return TBCDRF_NOBACKGROUND | TBCDRF_NOEDGES | TBCDRF_NOOFFSET |
+                TBCDRF_NOETCHEDEFFECT | CDRF_NOTIFYPOSTPAINT | CDRF_USECDCOLORS;
+        case CDDS_ITEMPOSTPAINT: {
+            bool is_hot = (lptbcd->nmcd.uItemState & CDIS_HOT) == CDIS_HOT;
+            bool is_selected = (lptbcd->nmcd.uItemState & CDIS_SELECTED) == CDIS_SELECTED;
+            if (!is_hot && !is_selected)
+                return CDRF_DODEFAULT;
+
+            RECT highlight_rect = taskbar_draw::DeflateRectCopy(lptbcd->nmcd.rc, DPI_SX(2), DPI_SY(4));
+            highlight_rect.bottom -= DPI_SY(4);
+            if (highlight_rect.bottom <= highlight_rect.top)
+                return CDRF_DODEFAULT;
+
+            if (is_hot) {
+                taskbar_draw::FillRoundedRect(
+                    lptbcd->nmcd.hdc,
+                    highlight_rect,
+                    taskbar_draw::GetHighlightRadius(),
+                    taskbar_draw::GetHoverColor(),
+                    taskbar_draw::GetHoverAlpha());
+            }
+            if (is_selected) {
+                taskbar_draw::FillRoundedRect(
+                    lptbcd->nmcd.hdc,
+                    highlight_rect,
+                    taskbar_draw::GetHighlightRadius(),
+                    taskbar_draw::GetHighlightColor(),
+                    taskbar_draw::GetHighlightAlpha());
+            }
+            return CDRF_DODEFAULT;
+        }
+        }
+    }
+
     if (pnmh->code == RBN_CHILDSIZE) {
         /* align the task bands to the top, so it's in row with the Start button */
         NMREBARCHILDSIZE *childSize = (NMREBARCHILDSIZE *)pnmh;
@@ -672,19 +760,61 @@ void DesktopBar::Resize(int cx, int cy)
     if (_hwndQuickLaunch) {
         quicklaunch_width = (int)SendMessage(_hwndQuickLaunch, PM_GET_WIDTH, 0, 0);
     }
-    int notifyarea_width = (int)SendMessage(_hwndNotify, PM_GET_WIDTH, 0, 0);
+    int taskbar_width = 0;
+    if (_hwndTaskBar) {
+        taskbar_width = (int)SendMessage(_hwndTaskBar, PM_GET_WIDTH, 0, 0);
+    }
+    int notifyarea_width = 0;
+    if (_hwndNotify) {
+        notifyarea_width = (int)SendMessage(_hwndNotify, PM_GET_WIDTH, 0, 0);
+    }
     //_log_(FmtString("Resize - %d,%d\r\n", cx, cy));
-    HDWP hdwp = BeginDeferWindowPos(3);
+    HDWP hdwp = BeginDeferWindowPos(4);
 
-    if (_hwndrebar)
+    if (_hwndrebar) {
+        if (_hwndStartButton) {
+            DeferWindowPos(hdwp, _hwndStartButton, 0, 0, 0, _start_button_width, cy, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
         DeferWindowPos(hdwp, _hwndrebar, 0, _taskbar_pos, 1, cx - _taskbar_pos - (notifyarea_width + 1), cy - 2, SWP_NOZORDER | SWP_NOACTIVATE);
-    else {
-        if (quicklaunch_width > 0) quicklaunch_width += _iQuickLaunchPadding;
-        if (_hwndQuickLaunch)
-            DeferWindowPos(hdwp, _hwndQuickLaunch, 0, _taskbar_pos, 1, quicklaunch_width, cy - 2, SWP_NOZORDER | SWP_NOACTIVATE);
+    } else {
+        int quicklaunch_padding = 0;
+        if (!taskbar_draw::IsModernTaskbarEnabled() || !taskbar_draw::IsCenteredEnabled())
+            quicklaunch_padding = (quicklaunch_width > 0 && taskbar_width > 0) ? _iQuickLaunchPadding : 0;
+        int start_gap = (_hwndQuickLaunch || taskbar_width > 0) ? _start_button_gap : 0;
+        int centerable_width = cx - notifyarea_width;
+        int group_width = _start_button_width + start_gap + quicklaunch_width + quicklaunch_padding + taskbar_width;
+        bool can_center = _centered_layout && group_width > 0 && group_width <= centerable_width;
 
-        if (_hwndTaskBar)
-            DeferWindowPos(hdwp, _hwndTaskBar, 0, _taskbar_pos + quicklaunch_width, 1, cx - _taskbar_pos - quicklaunch_width - (notifyarea_width + 1), cy - 2, SWP_NOZORDER | SWP_NOACTIVATE);
+        if (can_center) {
+            int group_left = (centerable_width - group_width) / 2;
+            int next_x = group_left;
+
+            if (_hwndStartButton) {
+                DeferWindowPos(hdwp, _hwndStartButton, 0, next_x, 0, _start_button_width, cy, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            next_x += _start_button_width + start_gap;
+
+            if (_hwndQuickLaunch) {
+                DeferWindowPos(hdwp, _hwndQuickLaunch, 0, next_x, 0, quicklaunch_width, cy, SWP_NOZORDER | SWP_NOACTIVATE);
+                next_x += quicklaunch_width + quicklaunch_padding;
+            }
+
+            if (_hwndTaskBar) {
+                DeferWindowPos(hdwp, _hwndTaskBar, 0, next_x, 0, taskbar_width, cy, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+        } else {
+            if (_hwndStartButton) {
+                DeferWindowPos(hdwp, _hwndStartButton, 0, 0, 0, _start_button_width, cy, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+
+            if (quicklaunch_width > 0)
+                quicklaunch_width += _iQuickLaunchPadding;
+            if (_hwndQuickLaunch)
+                DeferWindowPos(hdwp, _hwndQuickLaunch, 0, _taskbar_pos, 1, quicklaunch_width, cy - 2, SWP_NOZORDER | SWP_NOACTIVATE);
+
+            if (_hwndTaskBar)
+                DeferWindowPos(hdwp, _hwndTaskBar, 0, _taskbar_pos + quicklaunch_width, 1, cx - _taskbar_pos - quicklaunch_width - (notifyarea_width + 1), cy - 2, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
     }
 
     if (_hwndNotify)

@@ -9,7 +9,7 @@ struct PictureButton2 : public PictureButton {
     PictureButton2(HWND hwnd, HICON hIcon, HICON hIcon2, HBRUSH hbrush, HBRUSH hbrush2,
         COLORREF textcolor = -1, bool flat = false)
         : super(hwnd, hIcon, hbrush, textcolor, flat),
-        _hIcon(hIcon), _hHotIcon(hIcon2), _hBmp(0), _hBrush(hbrush), _hHotBrush(hbrush2), _flat(flat)
+        _hIcon(hIcon), _hHotIcon(hIcon2), _hBmp(0), _hBrush(hbrush), _hHotBrush(hbrush2), _flat(flat), _hovered(false)
     {
         _cx = super::_cx;
         _cy = super::_cy;
@@ -28,5 +28,6 @@ protected:
 
     COLORREF _textColor;
     bool    _flat;
+    bool    _hovered;
 };
 

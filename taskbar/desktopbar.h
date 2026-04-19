@@ -88,6 +88,9 @@ protected:
     RECT    _work_area;
     int     _taskbar_pos;
     int     _deskbar_pos_y;
+    int     _start_button_width;
+    int     _start_button_gap;
+    bool    _centered_layout;
     LRESULT Init(LPCREATESTRUCT pcs);
     LRESULT WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam);
     int     Notify(int id, NMHDR *pnmh);
