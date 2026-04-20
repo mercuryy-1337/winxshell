@@ -36,9 +36,12 @@
 #include <gdiplus.h>
 #include <uxtheme.h>
 
+#include <dwmapi.h>
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "dwmapi.lib")
 
 #include "../resource.h"
+#include "../luaengine/WindowCompositionAttribute.h"
 
 #include "desktopbar.h"
 #include "startmenu.h"
@@ -62,6 +65,12 @@ enum {
     PM_STARTMENU_SEARCH_KEYDOWN = WM_APP + 0x40,
     PM_STARTMENU_SEARCH_WHEEL = WM_APP + 0x41,
     PM_STARTMENU_SEARCH_FOCUS = WM_APP + 0x42
+};
+
+enum {
+    STARTMENU_CONTEXT_OPEN = 1,
+    STARTMENU_CONTEXT_COPY,
+    STARTMENU_CONTEXT_COPY_PATH
 };
 
 struct StartMenuSearchEdit : public SubclassedWindow {
@@ -1672,7 +1681,7 @@ static ModernStartMenuMetrics GetModernStartMenuMetrics()
         DPI_SY(42),
         DPI_SY(20),
         DPI_SY(24),
-        DPI_SX(54),
+        DPI_SX(80),
         DPI_SY(12),
         6,
         DPI_SY(72),
@@ -1826,6 +1835,72 @@ static void DrawChevronRightPrimitive(HDC hdc, const RECT &rect, COLORREF color)
 
     SelectObject(hdc, old_pen);
     DeleteObject(pen);
+}
+
+static void DrawChevronLeftPrimitive(HDC hdc, const RECT &rect, COLORREF color)
+{
+    HPEN pen = CreatePen(PS_SOLID, max(1, DPI_SX(2)), color);
+    HGDIOBJ old_pen = SelectObject(hdc, pen);
+    int center_x = (rect.left + rect.right) / 2;
+    int center_y = (rect.top + rect.bottom) / 2;
+    int size = max(2, DPI_SX(4));
+
+    MoveToEx(hdc, center_x + size, center_y - size, NULL);
+    LineTo(hdc, center_x, center_y);
+    LineTo(hdc, center_x + size, center_y + size);
+
+    SelectObject(hdc, old_pen);
+    DeleteObject(pen);
+}
+
+static RECT GetSectionActionChevronRect(const RECT &button_rect)
+{
+    return MakeRectWH(button_rect.right - DPI_SX(15),
+        button_rect.top,
+        DPI_SX(10),
+        button_rect.bottom - button_rect.top);
+}
+
+static RECT GetSectionActionTextRect(const RECT &button_rect)
+{
+    RECT text_rect = button_rect;
+    RECT chevron_rect = GetSectionActionChevronRect(button_rect);
+    text_rect.left += DPI_SX(12);
+    text_rect.right = max(text_rect.left, chevron_rect.left - DPI_SX(8));
+    return text_rect;
+}
+
+static void DrawSectionActionButtonContent(HDC hdc, const RECT &button_rect, const TCHAR *label, HFONT font, COLORREF color, bool back_chevron)
+{
+    RECT text_rect = GetSectionActionTextRect(button_rect);
+    RECT chevron_rect = GetSectionActionChevronRect(button_rect);
+    SelectObject(hdc, font ? font : g_Globals._hDefaultFont);
+    SetTextColor(hdc, color);
+    DrawText(hdc, label, -1, &text_rect,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    if (back_chevron)
+        DrawChevronLeftPrimitive(hdc, chevron_rect, color);
+    else
+        DrawChevronRightPrimitive(hdc, chevron_rect, color);
+}
+
+static BOOL ApplyBlurToPopupWindow(HWND hwnd, COLORREF color, BYTE alpha)
+{
+    static pfnSetWindowCompositionAttribute set_window_composition_attribute = NULL;
+
+    if (!set_window_composition_attribute) {
+        HMODULE user32 = GetModuleHandle(TEXT("user32.dll"));
+        if (user32)
+            set_window_composition_attribute = (pfnSetWindowCompositionAttribute)GetProcAddress(user32, "SetWindowCompositionAttribute");
+    }
+
+    if (!set_window_composition_attribute)
+        return FALSE;
+
+    ACCENT_POLICY accent = { ACCENT_ENABLE_BLURBEHIND, 0, color | ((DWORD)alpha << 24), 0 };
+    WINDOWCOMPOSITIONATTRIBDATA data = { WCA_ACCENT_POLICY, &accent, sizeof(accent) };
+    return set_window_composition_attribute(hwnd, &data);
 }
 
 static String FormatRecentItemMeta(Entry *entry)
@@ -2182,6 +2257,371 @@ static bool CopyTextToClipboard(HWND hwnd, const String &text)
     return true;
 }
 
+static bool CopyItemToClipboard(HWND hwnd, const String &path)
+{
+    if (path.empty() || !PathFileExists(path.c_str()) || !OpenClipboard(hwnd))
+        return false;
+
+    EmptyClipboard();
+
+    SIZE_T byte_count = sizeof(DROPFILES) + (path.length() + 2) * sizeof(TCHAR);
+    HGLOBAL global = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, byte_count);
+    if (!global) {
+        CloseClipboard();
+        return false;
+    }
+
+    DROPFILES *drop_files = (DROPFILES *)GlobalLock(global);
+    if (!drop_files) {
+        GlobalFree(global);
+        CloseClipboard();
+        return false;
+    }
+
+    drop_files->pFiles = sizeof(DROPFILES);
+#ifdef UNICODE
+    drop_files->fWide = TRUE;
+#endif
+    memcpy((LPBYTE)drop_files + sizeof(DROPFILES), path.c_str(), path.length() * sizeof(TCHAR));
+    GlobalUnlock(global);
+
+    if (!SetClipboardData(CF_HDROP, global)) {
+        GlobalFree(global);
+        CloseClipboard();
+        return false;
+    }
+
+    UINT preferred_drop_effect = RegisterClipboardFormat(CFSTR_PREFERREDDROPEFFECT);
+    HGLOBAL effect_memory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sizeof(DWORD));
+    if (effect_memory) {
+        DWORD *effect = (DWORD *)GlobalLock(effect_memory);
+        if (effect) {
+            *effect = DROPEFFECT_COPY;
+            GlobalUnlock(effect_memory);
+            SetClipboardData(preferred_drop_effect, effect_memory);
+        } else {
+            GlobalFree(effect_memory);
+        }
+    }
+
+    CloseClipboard();
+    return true;
+}
+
+struct StartMenuContextMenuEntry {
+    int     _command;
+    LPCTSTR _label;
+    bool    _enabled;
+};
+
+struct StartMenuContextMenuCreateInfo {
+    StartMenuContextMenuCreateInfo()
+        : _owner(NULL), _font(NULL), _screen_anchor(), _can_copy(false), _can_copy_path(false)
+    {
+    }
+
+    HWND    _owner;
+    HFONT   _font;
+    POINT   _screen_anchor;
+    bool    _can_copy;
+    bool    _can_copy_path;
+};
+
+struct StartMenuContextMenuPopup : public Window {
+    typedef Window super;
+
+    StartMenuContextMenuPopup(HWND hwnd, const StartMenuContextMenuCreateInfo &info)
+        : super(hwnd),
+          _owner(info._owner),
+          _font(info._font ? info._font : g_Globals._hDefaultFont),
+          _screen_anchor(info._screen_anchor),
+          _result(0),
+          _hot_index(-1),
+          _tracking_mouse(false)
+    {
+        _items.push_back(StartMenuContextMenuEntry{ STARTMENU_CONTEXT_OPEN, TEXT("Open"), true });
+        _items.push_back(StartMenuContextMenuEntry{ STARTMENU_CONTEXT_COPY, TEXT("Copy"), info._can_copy });
+        _items.push_back(StartMenuContextMenuEntry{ STARTMENU_CONTEXT_COPY_PATH, TEXT("Copy path"), info._can_copy_path });
+    }
+
+    static WindowClass &GetWndClass()
+    {
+        static WindowClass s_wc(TEXT("ExplauncherObjectContextMenu"), CS_HREDRAW | CS_VREDRAW);
+        s_wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        s_wc.hbrBackground = (HBRUSH)GetStockObject(NULL_BRUSH);
+        return s_wc;
+    }
+
+    static int Show(HWND owner, HFONT font, POINT screen_anchor, bool can_copy, bool can_copy_path)
+    {
+        StartMenuContextMenuCreateInfo info;
+        info._owner = owner;
+        info._font = font;
+        info._screen_anchor = screen_anchor;
+        info._can_copy = can_copy;
+        info._can_copy_path = can_copy_path;
+
+        SIZE size = MeasurePopup(font);
+        RECT rect = MakeRectWH(screen_anchor.x, screen_anchor.y, size.cx, size.cy);
+        MONITORINFO monitor_info = { sizeof(monitor_info) };
+        GetMonitorInfo(MonitorFromPoint(screen_anchor, MONITOR_DEFAULTTONEAREST), &monitor_info);
+
+        if (rect.right > monitor_info.rcWork.right)
+            OffsetRect(&rect, monitor_info.rcWork.right - rect.right, 0);
+        if (rect.bottom > monitor_info.rcWork.bottom)
+            OffsetRect(&rect, 0, monitor_info.rcWork.bottom - rect.bottom);
+        if (rect.left < monitor_info.rcWork.left)
+            OffsetRect(&rect, monitor_info.rcWork.left - rect.left, 0);
+        if (rect.top < monitor_info.rcWork.top)
+            OffsetRect(&rect, 0, monitor_info.rcWork.top - rect.top);
+
+        HWND hwnd = Window::Create(WINDOW_CREATOR_INFO(StartMenuContextMenuPopup, StartMenuContextMenuCreateInfo), &info,
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST, GetWndClass(), TEXT(""),
+            WS_POPUP, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, owner);
+        StartMenuContextMenuPopup *popup = GET_WINDOW(StartMenuContextMenuPopup, hwnd);
+        return popup ? popup->ShowModal() : 0;
+    }
+
+protected:
+    static SIZE MeasurePopup(HFONT font)
+    {
+        SIZE result = { DPI_SX(196), DPI_SY(8) * 2 + 3 * DPI_SY(34) + 2 * DPI_SY(4) };
+        HDC screen_dc = GetDC(NULL);
+        HFONT old_font = (HFONT)SelectObject(screen_dc, font ? font : g_Globals._hDefaultFont);
+        LPCTSTR labels[] = { TEXT("Open"), TEXT("Copy"), TEXT("Copy path") };
+
+        for (int index = 0; index < COUNTOF(labels); ++index) {
+            SIZE text_size = { 0 };
+            GetTextExtentPoint32(screen_dc, labels[index], _tcslen(labels[index]), &text_size);
+            result.cx = max(result.cx, text_size.cx + DPI_SX(48));
+        }
+
+        SelectObject(screen_dc, old_font);
+        ReleaseDC(NULL, screen_dc);
+        return result;
+    }
+
+    RECT GetPanelRect() const
+    {
+        ClientRect client(_hwnd);
+        return MakeRect(0, 0, client.right, client.bottom);
+    }
+
+    RECT GetItemRect(int index) const
+    {
+        RECT panel_rect = GetPanelRect();
+        int item_height = DPI_SY(34);
+        int item_gap = DPI_SY(4);
+        int padding = DPI_SY(8);
+        return MakeRectWH(panel_rect.left + DPI_SX(8),
+            panel_rect.top + padding + index * (item_height + item_gap),
+            (panel_rect.right - panel_rect.left) - DPI_SX(16),
+            item_height);
+    }
+
+    void UpdateHotIndex(POINT pt)
+    {
+        int hot_index = -1;
+        for (int index = 0; index < (int)_items.size(); ++index) {
+            RECT item_rect = GetItemRect(index);
+            if (PtInRect(&item_rect, pt)) {
+                hot_index = index;
+                break;
+            }
+        }
+
+        if (hot_index != _hot_index) {
+            _hot_index = hot_index;
+            InvalidateRect(_hwnd, NULL, FALSE);
+        }
+    }
+
+    void ApplyWindowRegion()
+    {
+        ClientRect client(_hwnd);
+        HRGN region = CreateRoundRectRgn(0, 0, client.right + 1, client.bottom + 1, DPI_SX(16), DPI_SX(16));
+        if (region)
+            SetWindowRgn(_hwnd, region, TRUE);
+    }
+
+    void Paint(HDC canvas)
+    {
+        RECT panel_rect = GetPanelRect();
+        COLORREF panel_fill = RGB(34, 37, 42);
+        COLORREF panel_border = RGB(91, 96, 102);
+        COLORREF item_hover_fill = RGB(72, 77, 84);
+        COLORREF item_text = RGB(239, 242, 245);
+        COLORREF item_disabled = RGB(138, 143, 149);
+
+        FillRoundedRectPrimitive(canvas, panel_rect, panel_fill, DPI_SX(16), panel_border);
+
+        HFONT old_font = (HFONT)SelectObject(canvas, _font ? _font : g_Globals._hDefaultFont);
+        int old_bk_mode = SetBkMode(canvas, TRANSPARENT);
+
+        for (int index = 0; index < (int)_items.size(); ++index) {
+            const StartMenuContextMenuEntry &item = _items[index];
+            RECT item_rect = GetItemRect(index);
+            if (_hot_index == index && item._enabled)
+                FillRoundedRectPrimitive(canvas, item_rect, item_hover_fill, DPI_SX(10));
+
+            RECT text_rect = item_rect;
+            text_rect.left += DPI_SX(14);
+            SetTextColor(canvas, item._enabled ? item_text : item_disabled);
+            DrawText(canvas, item._label, -1, &text_rect,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        }
+
+        SetBkMode(canvas, old_bk_mode);
+        SelectObject(canvas, old_font);
+    }
+
+    int ShowModal()
+    {
+        ShowWindow(_hwnd, SW_SHOW);
+        UpdateWindow(_hwnd);
+        SetForegroundWindow(_hwnd);
+        SetFocus(_hwnd);
+        SetCapture(_hwnd);
+
+        MSG msg;
+        while (IsWindow(_hwnd) && IsWindowVisible(_hwnd)) {
+            if (!GetMessage(&msg, 0, 0, 0)) {
+                PostQuitMessage((int)msg.wParam);
+                break;
+            }
+
+            try {
+                if (pretranslate_msg(&msg))
+                    continue;
+
+                if (dispatch_dialog_msg(&msg))
+                    continue;
+
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+            } catch (COMException &e) {
+                HandleException(e, _hwnd);
+            }
+        }
+
+        if (GetCapture() == _hwnd)
+            ReleaseCapture();
+
+        return _result;
+    }
+
+    void CloseMenu(int result)
+    {
+        _result = result;
+        if (IsWindow(_hwnd))
+            DestroyWindow(_hwnd);
+    }
+
+    virtual LRESULT Init(LPCREATESTRUCT pcs)
+    {
+        UNREFERENCED_PARAMETER(pcs);
+        ApplyWindowRegion();
+        ApplyBlurToPopupWindow(_hwnd, RGB(34, 37, 42), 220);
+        return 0;
+    }
+
+    virtual LRESULT WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
+    {
+        switch (nmsg) {
+        case WM_ERASEBKGND:
+            return 1;
+
+        case WM_PAINT: {
+            BufferedPaintCanvas canvas(_hwnd);
+            Paint(canvas);
+            return 0;
+        }
+
+        case WM_SIZE:
+            ApplyWindowRegion();
+            return 0;
+
+        case WM_MOUSEMOVE: {
+            if (!_tracking_mouse) {
+                TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, _hwnd, 0 };
+                TrackMouseEvent(&tme);
+                _tracking_mouse = true;
+            }
+            UpdateHotIndex(Point(lparam));
+            return 0;
+        }
+
+        case WM_MOUSELEAVE:
+            _tracking_mouse = false;
+            _hot_index = -1;
+            InvalidateRect(_hwnd, NULL, FALSE);
+            return 0;
+
+        case WM_LBUTTONUP:
+        case WM_RBUTTONUP: {
+            POINT pt = Point(lparam);
+            UpdateHotIndex(pt);
+            if (_hot_index >= 0 && _hot_index < (int)_items.size() && _items[_hot_index]._enabled)
+                CloseMenu(_items[_hot_index]._command);
+            else
+                CloseMenu(0);
+            return 0;
+        }
+
+        case WM_CAPTURECHANGED:
+            if ((HWND)lparam != _hwnd)
+                CloseMenu(0);
+            return 0;
+
+        case WM_KILLFOCUS:
+            if ((HWND)wparam != _owner)
+                CloseMenu(0);
+            return 0;
+
+        case WM_KEYDOWN:
+            switch (wparam) {
+            case VK_ESCAPE:
+                CloseMenu(0);
+                return 0;
+            case VK_RETURN:
+                if (_hot_index >= 0 && _hot_index < (int)_items.size() && _items[_hot_index]._enabled)
+                    CloseMenu(_items[_hot_index]._command);
+                return 0;
+            case VK_DOWN:
+                if (_hot_index < (int)_items.size() - 1)
+                    ++_hot_index;
+                else
+                    _hot_index = 0;
+                InvalidateRect(_hwnd, NULL, FALSE);
+                return 0;
+            case VK_UP:
+                if (_hot_index > 0)
+                    --_hot_index;
+                else
+                    _hot_index = (int)_items.size() - 1;
+                InvalidateRect(_hwnd, NULL, FALSE);
+                return 0;
+            default:
+                break;
+            }
+            break;
+
+        case WM_NCHITTEST:
+            return HTCLIENT;
+        }
+
+        return super::WndProc(nmsg, wparam, lparam);
+    }
+
+    HWND    _owner;
+    HFONT   _font;
+    POINT   _screen_anchor;
+    vector<StartMenuContextMenuEntry> _items;
+    int     _result;
+    int     _hot_index;
+    bool    _tracking_mouse;
+};
+
 static ICON_ID GetPathQueryIconId(LPCTSTR path, DWORD file_attributes)
 {
     if (file_attributes & FILE_ATTRIBUTE_DIRECTORY)
@@ -2261,6 +2701,74 @@ static RECT CalculateModernStartMenuRect()
     return MakeRectWH(x, y, width, height);
 }
 
+static void RedrawStartMenuWindowNow(HWND hwnd)
+{
+    RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_FRAME);
+}
+
+static double GetAnimationClockMilliseconds()
+{
+    static LARGE_INTEGER frequency = { 0 };
+    if (frequency.QuadPart == 0)
+        QueryPerformanceFrequency(&frequency);
+
+    LARGE_INTEGER counter;
+    QueryPerformanceCounter(&counter);
+    return frequency.QuadPart ? ((double)counter.QuadPart * 1000.0 / (double)frequency.QuadPart) : 0.0;
+}
+
+static void WaitForAnimationFrame()
+{
+    if (FAILED(DwmFlush()))
+        Sleep(1);
+}
+
+static float EaseOutCubic(float t)
+{
+    float inv = 1.0f - t;
+    return 1.0f - inv * inv * inv;
+}
+
+static void AnimateStartMenuSlide(HWND hwnd, HWND insert_after, const RECT &target_rect, bool showing)
+{
+    const int width = target_rect.right - target_rect.left;
+    const int height = target_rect.bottom - target_rect.top;
+    const int offset = max(DPI_SY(36), height / 14);
+    const int start_top = showing ? target_rect.top + offset : target_rect.top;
+    const int end_top = showing ? target_rect.top : target_rect.top + offset;
+    const double duration_ms = 190.0;
+
+    if (showing) {
+        SetWindowPos(hwnd, insert_after, target_rect.left, start_top, width, height,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        RedrawStartMenuWindowNow(hwnd);
+    }
+
+    double start_ms = GetAnimationClockMilliseconds();
+    for (;;) {
+        double elapsed = GetAnimationClockMilliseconds() - start_ms;
+        if (elapsed > duration_ms)
+            elapsed = duration_ms;
+
+        float t = duration_ms > 0.0 ? (float)(elapsed / duration_ms) : 1.0f;
+        float eased = EaseOutCubic(t);
+        int current_top = start_top + (int)((end_top - start_top) * eased + (end_top >= start_top ? 0.5f : -0.5f));
+
+        SetWindowPos(hwnd, insert_after, target_rect.left, current_top, width, height, SWP_NOACTIVATE);
+        RedrawStartMenuWindowNow(hwnd);
+
+        if (elapsed >= duration_ms)
+            break;
+
+        WaitForAnimationFrame();
+    }
+
+    if (!showing) {
+        ShowWindow(hwnd, SW_HIDE);
+        SetWindowPos(hwnd, insert_after, target_rect.left, target_rect.top, width, height, SWP_NOACTIVATE);
+    }
+}
+
 StartMenuRoot::StartMenuRoot(HWND hwnd, const StartMenuRootCreateInfo &info)
     :  super(hwnd, info._icon_size),
        _hwndStartButton(0),
@@ -2271,11 +2779,13 @@ StartMenuRoot::StartMenuRoot(HWND hwnd, const StartMenuRootCreateInfo &info)
          _search_result_scroll(0),
          _all_program_scroll(0),
          _drive_folder_scroll(0),
+                 _recent_document_scroll(0),
          _search_selected_index(-1),
          _hwndSearchEdit(NULL),
          _search_edit_brush(NULL),
                  _search_edit_fill(CLR_INVALID),
        _show_all_programs(false),
+             _show_all_recents(false),
          _search_active(false),
        _hot_area(HOT_NONE),
        _hot_index(-1),
@@ -2327,7 +2837,7 @@ HWND StartMenuRoot::Create(HWND hwndOwner, int icon_size)
     return Window::Create(WINDOW_CREATOR_INFO(StartMenuRoot, StartMenuRootCreateInfo), &create_info,
         WS_EX_TOOLWINDOW, GetWndClasss(), TITLE_STARTMENU,
         WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-        rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, hwndOwner);
+    rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, 0);
 }
 
 HFONT StartMenuRoot::CreateMenuFont(int point_size, int weight) const
@@ -2337,7 +2847,7 @@ HFONT StartMenuRoot::CreateMenuFont(int point_size, int weight) const
 
 int StartMenuRoot::GetVisibleProgramCount() const
 {
-    if (_show_all_programs || IsSearchResultsVisible() || IsSearchHomeVisible())
+    if (_show_all_programs || _show_all_recents || IsSearchResultsVisible() || IsSearchHomeVisible())
         return 0;
 
     return min(12, (int)_program_items.size());
@@ -2345,10 +2855,25 @@ int StartMenuRoot::GetVisibleProgramCount() const
 
 int StartMenuRoot::GetVisibleRecommendedCount() const
 {
-    if (_show_all_programs || IsSearchResultsVisible() || IsSearchHomeVisible())
+    if (_show_all_programs || _show_all_recents || IsSearchResultsVisible() || IsSearchHomeVisible())
         return 0;
 
     return min(6, (int)_recommended_items.size());
+}
+
+int StartMenuRoot::GetVisibleRecentDocumentCount() const
+{
+    if (!_show_all_recents || IsSearchResultsVisible() || IsSearchHomeVisible())
+        return 0;
+
+    RECT list_rect = GetRecentDocumentsListRect();
+    int row_height = DPI_SY(54);
+    int row_gap = DPI_SY(6);
+    int row_pitch = row_height + row_gap;
+    int available = list_rect.bottom - list_rect.top;
+    int count = row_pitch > 0 ? (available + row_gap) / row_pitch : 0;
+
+    return min(max(0, count), max(0, (int)_recommended_items.size() - _recent_document_scroll));
 }
 
 bool StartMenuRoot::IsSearchResultsVisible() const
@@ -2724,6 +3249,32 @@ RECT StartMenuRoot::GetRecommendedTileRect(int index) const
         metrics._recommended_tile_height);
 }
 
+RECT StartMenuRoot::GetRecentDocumentsListRect() const
+{
+    ClientRect client(_hwnd);
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    RECT footer_rect = GetFooterRect();
+    RECT header_rect = GetRecommendedHeaderRect();
+
+    return MakeRectWH(metrics._outer_padding,
+        header_rect.bottom + metrics._section_item_gap,
+        client.right - metrics._outer_padding * 2,
+        max(0, footer_rect.top - metrics._outer_padding - (header_rect.bottom + metrics._section_item_gap)));
+}
+
+RECT StartMenuRoot::GetRecentDocumentRowRect(int index) const
+{
+    RECT list_rect = GetRecentDocumentsListRect();
+    int row_height = DPI_SY(54);
+    int row_gap = DPI_SY(6);
+    int visible_index = index - _recent_document_scroll;
+
+    return MakeRectWH(list_rect.left,
+        list_rect.top + visible_index * (row_height + row_gap),
+        max(0, (list_rect.right - list_rect.left) - DPI_SX(10)),
+        row_height);
+}
+
 RECT StartMenuRoot::GetFooterRect() const
 {
     ClientRect client(_hwnd);
@@ -2826,7 +3377,14 @@ void StartMenuRoot::UpdatePlacement()
     _panel_width = rect.right - rect.left;
     _panel_height = rect.bottom - rect.top;
 
-    SetWindowPos(_hwnd, HWND_TOP, rect.left, rect.top, _panel_width, _panel_height, SWP_NOACTIVATE);
+    HWND insert_after = HWND_TOP;
+    if (_hwndStartButton) {
+        HWND desktopbar = GetParent(_hwndStartButton);
+        if (desktopbar)
+            insert_after = desktopbar;
+    }
+
+    SetWindowPos(_hwnd, insert_after, rect.left, rect.top, _panel_width, _panel_height, SWP_NOACTIVATE);
     ApplyWindowRegion();
     LayoutSearchEdit();
 }
@@ -2949,7 +3507,7 @@ void StartMenuRoot::BuildRecommendedItems()
 
         dir.sort_directory(SORT_DATE);
 
-        for (Entry *entry = dir._down; entry && added < 8; entry = entry->_next) {
+        for (Entry *entry = dir._down; entry && added < RECENT_DOCS_COUNT; entry = entry->_next) {
             if (entry->_shell_attribs & SFGAO_HIDDEN)
                 continue;
             if (entry->_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
@@ -3052,6 +3610,7 @@ void StartMenuRoot::RebuildModernContent()
     _search_result_scroll = 0;
     _all_program_scroll = 0;
     _drive_folder_scroll = 0;
+    _recent_document_scroll = 0;
 
     BuildProgramItems();
     BuildRecommendedItems();
@@ -3159,6 +3718,109 @@ bool StartMenuRoot::AutocompleteSearchSelection()
 
     SetSearchQuery(item._autocomplete_text);
     return true;
+}
+
+void StartMenuRoot::AnimateShow()
+{
+    RECT rect = CalculateModernStartMenuRect();
+    HWND insert_after = _hwndStartButton ? GetParent(_hwndStartButton) : HWND_TOP;
+    AnimateStartMenuSlide(_hwnd, insert_after, rect, true);
+}
+
+void StartMenuRoot::AnimateHide()
+{
+    RECT rect = CalculateModernStartMenuRect();
+    HWND insert_after = _hwndStartButton ? GetParent(_hwndStartButton) : HWND_TOP;
+    AnimateStartMenuSlide(_hwnd, insert_after, rect, false);
+}
+
+bool StartMenuRoot::TryGetContextMenuItem(HOT_AREA area, int index, ModernStartMenuItem **item)
+{
+    if (item)
+        *item = NULL;
+
+    ModernStartMenuItem *resolved_item = NULL;
+
+    switch (area) {
+    case HOT_SEARCH_RESULT:
+        if (index >= 0 && index < (int)_search_results.size())
+            resolved_item = &_search_results[index];
+        break;
+    case HOT_SEARCH_HOME_RECENT:
+        if (index >= 0 && index < (int)_search_recent_items.size())
+            resolved_item = &_search_recent_items[index];
+        break;
+    case HOT_SEARCH_HOME_TOP_APP:
+        if (!_all_program_items.empty()) {
+            if (index >= 0 && index < (int)_all_program_items.size())
+                resolved_item = &_all_program_items[index];
+        } else if (index >= 0 && index < (int)_program_items.size()) {
+            resolved_item = &_program_items[index];
+        }
+        break;
+    case HOT_PROGRAM:
+        if (index >= 0 && index < (int)_program_items.size())
+            resolved_item = &_program_items[index];
+        break;
+    case HOT_RECOMMENDED:
+        if (index >= 0 && index < (int)_recommended_items.size())
+            resolved_item = &_recommended_items[index];
+        break;
+    case HOT_ALL_PROGRAM:
+        if (index >= 0 && index < (int)_all_program_items.size())
+            resolved_item = &_all_program_items[index];
+        break;
+    case HOT_DRIVE_FOLDER:
+        if (index >= 0 && index < (int)_drive_folder_items.size())
+            resolved_item = &_drive_folder_items[index];
+        break;
+    default:
+        break;
+    }
+
+    if (!resolved_item)
+        return false;
+
+    if (item)
+        *item = resolved_item;
+
+    return true;
+}
+
+bool StartMenuRoot::ShowContextMenuForHotArea(HOT_AREA area, int index, POINT screen_pt)
+{
+    ModernStartMenuItem *item = NULL;
+    if (!TryGetContextMenuItem(area, index, &item) || !item)
+        return false;
+
+    if (area == HOT_SEARCH_RESULT && index >= 0) {
+        _search_selected_index = index;
+        _hot_area = area;
+        _hot_index = index;
+        RECT details_rect = GetSearchDetailsRect();
+        InvalidateRect(_hwnd, &details_rect, FALSE);
+        InvalidateHotArea(area, index);
+    }
+
+    String resolved_path;
+    bool has_resolved_path = TryResolveStartMenuItemPath(*item, resolved_path);
+    bool path_exists = has_resolved_path && PathFileExists(resolved_path.c_str()) != FALSE;
+    int command = StartMenuContextMenuPopup::Show(_hwnd,
+        _item_font ? _item_font : g_Globals._hDefaultFont,
+        screen_pt,
+        path_exists,
+        has_resolved_path);
+
+    switch (command) {
+    case STARTMENU_CONTEXT_OPEN:
+        return ExecuteItem(*item);
+    case STARTMENU_CONTEXT_COPY:
+        return path_exists ? CopyItemToClipboard(_hwnd, resolved_path) : false;
+    case STARTMENU_CONTEXT_COPY_PATH:
+        return has_resolved_path ? CopyTextToClipboard(_hwnd, TrimTrailingBackslash(resolved_path)) : false;
+    default:
+        return false;
+    }
 }
 
 void StartMenuRoot::UpdateSearchResults()
@@ -3280,8 +3942,10 @@ void StartMenuRoot::SetSearchQuery(const String &query, bool sync_edit)
 {
     _search_query = query;
     _search_active = !_search_query.empty() || GetFocus() == _hwndSearchEdit;
-    if (_search_active)
+    if (_search_active || !_search_query.empty()) {
         _show_all_programs = false;
+        _show_all_recents = false;
+    }
     UpdateSearchResults();
 
     if (IsSearchResultsVisible() && !_search_results.empty()) {
@@ -3334,6 +3998,8 @@ bool StartMenuRoot::HandleMouseWheel(short wheel_delta, POINT screen_pt)
 
     if (IsSearchResultsVisible()) {
         changed = AdjustScrollOffset(&_search_result_scroll, (int)_search_results.size(), GetVisibleSearchResultCount(), delta_lines);
+    } else if (_show_all_recents) {
+        changed = AdjustScrollOffset(&_recent_document_scroll, (int)_recommended_items.size(), GetVisibleRecentDocumentCount(), delta_lines);
     } else if (_show_all_programs) {
         RECT apps_rect = GetAllAppsListRect();
         RECT drive_rect = GetDriveFoldersListRect();
@@ -3516,8 +4182,12 @@ RECT StartMenuRoot::GetHotRect(HOT_AREA area, int index) const
             return GetProgramTileRect(index);
         break;
     case HOT_RECOMMENDED:
-        if (index >= 0 && index < GetVisibleRecommendedCount())
+        if (_show_all_recents) {
+            if (index >= _recent_document_scroll && index < _recent_document_scroll + GetVisibleRecentDocumentCount())
+                return GetRecentDocumentRowRect(index);
+        } else if (index >= 0 && index < GetVisibleRecommendedCount()) {
             return GetRecommendedTileRect(index);
+        }
         break;
     case HOT_ALL_PROGRAM:
         if (index >= _all_program_scroll && index < _all_program_scroll + GetVisibleAllProgramCount())
@@ -3640,6 +4310,25 @@ bool StartMenuRoot::HitTest(POINT pt, HOT_AREA *area, int *index) const
         return false;
     }
 
+    if (_show_all_recents) {
+        rect = GetRecommendedButtonRect();
+        if (PtInRect(&rect, pt)) {
+            if (area) *area = HOT_RECOMMENDED_BUTTON;
+            return true;
+        }
+
+        for (int item_index = _recent_document_scroll; item_index < _recent_document_scroll + GetVisibleRecentDocumentCount(); ++item_index) {
+            rect = GetRecentDocumentRowRect(item_index);
+            if (PtInRect(&rect, pt)) {
+                if (area) *area = HOT_RECOMMENDED;
+                if (index) *index = item_index;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     if (!_show_all_programs) {
         rect = GetRecommendedButtonRect();
         if (PtInRect(&rect, pt)) {
@@ -3707,6 +4396,7 @@ int StartMenuRoot::Command(int id, int code)
     switch (id) {
     case IDC_PROGRAMS:
         _show_all_programs = !_show_all_programs;
+        _show_all_recents = false;
         SetSearchQuery(TEXT(""));
         _all_program_scroll = 0;
         _drive_folder_scroll = 0;
@@ -3714,11 +4404,13 @@ int StartMenuRoot::Command(int id, int code)
         return 0;
 
     case IDC_RECENT:
-        CloseStartMenu(id);
-        try {
-            launch_file(_hwnd, SpecialFolderFSPath(CSIDL_RECENT, _hwnd));
-        } catch (COMException &) {
-        }
+        CloseOtherSubmenus();
+        SetSearchQuery(TEXT(""));
+        _show_all_programs = false;
+        _show_all_recents = !_show_all_recents;
+        _recent_document_scroll = 0;
+        RefreshSearchEditBrush();
+        InvalidateRect(_hwnd, NULL, FALSE);
         return 0;
 
     case IDC_SETTINGS:
@@ -3730,6 +4422,7 @@ int StartMenuRoot::Command(int id, int code)
     case IDC_SEARCH:
         _search_active = true;
         _show_all_programs = false;
+        _show_all_recents = false;
         _hot_area = HOT_SEARCH;
         _hot_index = -1;
         RefreshSearchEditBrush();
@@ -3786,19 +4479,21 @@ void StartMenuRoot::TrackStartmenu()
     HWND hwnd = _hwnd;
 
     _show_all_programs = false;
+    _show_all_recents = false;
     _all_program_scroll = 0;
     _drive_folder_scroll = 0;
+    _recent_document_scroll = 0;
     SetSearchQuery(TEXT(""));
     ClearHotState();
     RebuildModernContent();
+    _search_active = false;
+    RefreshSearchEditBrush();
     UpdatePlacement();
 
-    ShowWindow(hwnd, SW_SHOW);
+    AnimateShow();
     SetForegroundWindow(hwnd);
     SetActiveWindow(hwnd);
     SetFocus(hwnd);
-    _search_active = false;
-    RefreshSearchEditBrush();
 
     while (IsWindow(hwnd) && IsWindowVisible(hwnd)) {
         if (!GetMessage(&msg, 0, 0, 0)) {
@@ -3854,6 +4549,7 @@ LRESULT StartMenuRoot::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
     case PM_STARTMENU_SEARCH_FOCUS:
         _search_active = true;
         _show_all_programs = false;
+        _show_all_recents = false;
         _hot_area = HOT_SEARCH;
         _hot_index = -1;
         RefreshSearchEditBrush();
@@ -4004,6 +4700,41 @@ LRESULT StartMenuRoot::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
         return 0;
     }
 
+    case WM_CONTEXTMENU: {
+        if ((HWND)wparam == _hwndSearchEdit)
+            break;
+
+        HOT_AREA hot_area = HOT_NONE;
+        int hot_index = -1;
+        POINT screen_pt = { GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
+
+        if (screen_pt.x == -1 && screen_pt.y == -1) {
+            hot_area = _hot_area;
+            hot_index = _hot_index;
+
+            if (hot_area == HOT_NONE && IsSearchResultsVisible()) {
+                hot_area = HOT_SEARCH_RESULT;
+                hot_index = GetSelectedSearchResultIndex();
+            }
+
+            RECT anchor_rect = GetHotRect(hot_area, hot_index);
+            if (IsNonEmptyRect(anchor_rect)) {
+                POINT anchor_pt = { anchor_rect.left, anchor_rect.bottom };
+                ClientToScreen(_hwnd, &anchor_pt);
+                screen_pt = anchor_pt;
+            }
+        } else {
+            POINT client_pt = screen_pt;
+            ScreenToClient(_hwnd, &client_pt);
+            HitTest(client_pt, &hot_area, &hot_index);
+        }
+
+        if (ShowContextMenuForHotArea(hot_area, hot_index, screen_pt))
+            return 0;
+
+        return 0;
+    }
+
     case WM_KEYDOWN:
         if (GetFocus() == _hwndSearchEdit)
             return 0;
@@ -4125,6 +4856,7 @@ LRESULT StartMenuRoot::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
             next_query += (TCHAR)wparam;
             _search_active = true;
             _show_all_programs = false;
+            _show_all_recents = false;
             if (_hwndSearchEdit)
                 SetFocus(_hwndSearchEdit);
             SetSearchQuery(next_query);
@@ -4430,16 +5162,8 @@ void StartMenuRoot::Paint(HDC canvas)
         FillRoundedRectPrimitive(canvas, programs_button_rect,
             _hot_area == HOT_PROGRAMS_BUTTON ? action_hover_fill : action_fill,
             DPI_SX(12), action_border);
-        RECT programs_button_text_rect = programs_button_rect;
-        programs_button_text_rect.left += DPI_SX(12);
-        programs_button_text_rect.right -= DPI_SX(18);
-        SelectObject(canvas, _meta_font ? _meta_font : g_Globals._hDefaultFont);
-        SetTextColor(canvas, RGB(236, 239, 242));
-        DrawText(canvas, TEXT("Pinned"), -1, &programs_button_text_rect,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-        DrawChevronRightPrimitive(canvas,
-            MakeRectWH(programs_button_rect.right - DPI_SX(16), programs_button_rect.top, DPI_SX(10), programs_button_rect.bottom - programs_button_rect.top),
-            RGB(236, 239, 242));
+        DrawSectionActionButtonContent(canvas, programs_button_rect, TEXT("Back"), _meta_font,
+            RGB(236, 239, 242), true);
 
         for (int index = _all_program_scroll; index < _all_program_scroll + GetVisibleAllProgramCount(); ++index) {
             RECT item_rect = GetAllProgramRowRect(index);
@@ -4524,6 +5248,64 @@ void StartMenuRoot::Paint(HDC canvas)
         }
 
         DrawVerticalScrollIndicator(canvas, GetDriveFoldersListRect(), (int)_drive_folder_items.size(), GetVisibleDriveFolderCount(), _drive_folder_scroll);
+    } else if (_show_all_recents) {
+        RECT recommended_header_rect = GetRecommendedHeaderRect();
+        SelectObject(canvas, _section_font ? _section_font : g_Globals._hDefaultFont);
+        SetTextColor(canvas, section_text);
+        DrawText(canvas, TEXT("Recents"), -1, &recommended_header_rect,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        RECT recommended_button_rect = GetRecommendedButtonRect();
+        FillRoundedRectPrimitive(canvas, recommended_button_rect,
+            _hot_area == HOT_RECOMMENDED_BUTTON ? action_hover_fill : action_fill,
+            DPI_SX(12), action_border);
+        DrawSectionActionButtonContent(canvas, recommended_button_rect, TEXT("Back"), _meta_font,
+            RGB(236, 239, 242), true);
+
+        for (int index = _recent_document_scroll; index < _recent_document_scroll + GetVisibleRecentDocumentCount(); ++index) {
+            RECT item_rect = GetRecentDocumentRowRect(index);
+            ModernStartMenuItem &item = _recommended_items[index];
+            EnsureItemIcon(item, DPI_SX(20));
+
+            COLORREF tile_color = (_hot_area == HOT_RECOMMENDED && _hot_index == index) ? list_hover_fill : list_fill;
+            FillRoundedRectPrimitive(canvas, item_rect, tile_color, DPI_SX(10), list_border);
+
+            HBRUSH tile_brush = CreateSolidBrush(tile_color);
+            int icon_left = item_rect.left + DPI_SX(12);
+            int icon_top = item_rect.top + ((item_rect.bottom - item_rect.top - DPI_SX(20)) / 2);
+            g_Globals._icon_cache.get_icon(item._icon_id).draw(canvas, icon_left, icon_top,
+                DPI_SX(20), DPI_SX(20), tile_color, tile_brush);
+            DeleteObject(tile_brush);
+
+            RECT title_rect = item_rect;
+            title_rect.left += DPI_SX(44);
+            title_rect.top += DPI_SY(7);
+            title_rect.right -= DPI_SX(10);
+            title_rect.bottom = title_rect.top + DPI_SY(18);
+            SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, item_text);
+            DrawText(canvas, item._title.c_str(), -1, &title_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+            RECT meta_rect = item_rect;
+            meta_rect.left += DPI_SX(44);
+            meta_rect.top += DPI_SY(28);
+            meta_rect.right -= DPI_SX(10);
+            SelectObject(canvas, _meta_font ? _meta_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, meta_text);
+            DrawText(canvas, item._meta_text.empty() ? TEXT("Recent item") : item._meta_text.c_str(), -1, &meta_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        }
+
+        if (GetVisibleRecentDocumentCount() == 0) {
+            RECT empty_rect = GetRecentDocumentsListRect();
+            SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, meta_text);
+            DrawText(canvas, TEXT("No recents yet."), -1, &empty_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+        }
+
+        DrawVerticalScrollIndicator(canvas, GetRecentDocumentsListRect(), (int)_recommended_items.size(), GetVisibleRecentDocumentCount(), _recent_document_scroll);
     } else {
         DrawText(canvas, TEXT("Pinned"), -1, &programs_header_rect,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
@@ -4532,16 +5314,8 @@ void StartMenuRoot::Paint(HDC canvas)
         FillRoundedRectPrimitive(canvas, programs_button_rect,
             _hot_area == HOT_PROGRAMS_BUTTON ? action_hover_fill : action_fill,
             DPI_SX(12), action_border);
-        RECT programs_button_text_rect = programs_button_rect;
-        programs_button_text_rect.left += DPI_SX(12);
-        programs_button_text_rect.right -= DPI_SX(18);
-        SelectObject(canvas, _meta_font ? _meta_font : g_Globals._hDefaultFont);
-        SetTextColor(canvas, RGB(236, 239, 242));
-        DrawText(canvas, TEXT("All"), -1, &programs_button_text_rect,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-        DrawChevronRightPrimitive(canvas,
-            MakeRectWH(programs_button_rect.right - DPI_SX(16), programs_button_rect.top, DPI_SX(10), programs_button_rect.bottom - programs_button_rect.top),
-            RGB(236, 239, 242));
+        DrawSectionActionButtonContent(canvas, programs_button_rect, TEXT("All"), _meta_font,
+            RGB(236, 239, 242), false);
 
         for (int index = 0; index < GetVisibleProgramCount(); ++index) {
             RECT item_rect = GetProgramTileRect(index);
@@ -4567,8 +5341,13 @@ void StartMenuRoot::Paint(HDC canvas)
             text_rect.bottom -= DPI_SY(8);
             SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
             SetTextColor(canvas, item_text);
+            UINT title_format = DT_CENTER | DT_NOPREFIX | DT_END_ELLIPSIS;
+            if (item._title.length() <= 10 || item._title.find(TEXT(" ")) == String::npos)
+                title_format |= DT_SINGLELINE | DT_VCENTER;
+            else
+                title_format |= DT_TOP | DT_WORDBREAK;
             DrawText(canvas, item._title.c_str(), -1, &text_rect,
-                DT_CENTER | DT_TOP | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+                title_format);
         }
 
         if (GetVisibleProgramCount() == 0) {
@@ -4589,16 +5368,8 @@ void StartMenuRoot::Paint(HDC canvas)
         FillRoundedRectPrimitive(canvas, recommended_button_rect,
             _hot_area == HOT_RECOMMENDED_BUTTON ? action_hover_fill : action_fill,
             DPI_SX(12), action_border);
-        RECT recommended_button_text_rect = recommended_button_rect;
-        recommended_button_text_rect.left += DPI_SX(12);
-        recommended_button_text_rect.right -= DPI_SX(18);
-        SelectObject(canvas, _meta_font ? _meta_font : g_Globals._hDefaultFont);
-        SetTextColor(canvas, RGB(236, 239, 242));
-        DrawText(canvas, TEXT("Open"), -1, &recommended_button_text_rect,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-        DrawChevronRightPrimitive(canvas,
-            MakeRectWH(recommended_button_rect.right - DPI_SX(16), recommended_button_rect.top, DPI_SX(10), recommended_button_rect.bottom - recommended_button_rect.top),
-            RGB(236, 239, 242));
+        DrawSectionActionButtonContent(canvas, recommended_button_rect, TEXT("More"), _meta_font,
+            RGB(236, 239, 242), false);
 
         for (int index = 0; index < GetVisibleRecommendedCount(); ++index) {
             RECT item_rect = GetRecommendedTileRect(index);
@@ -4705,13 +5476,15 @@ void StartMenuRoot::Paint(HDC canvas)
 
 void StartMenuRoot::CloseStartMenu(int id)
 {
+    UNREFERENCED_PARAMETER(id);
+
     _tracking_mouse = false;
     ClearHotState();
     _search_active = false;
     RefreshSearchEditBrush();
 
     if (IsStartMenuVisible())
-        ShowWindow(_hwnd, SW_HIDE);
+        AnimateHide();
 }
 
 bool StartMenuRoot::IsStartMenuVisible() const

@@ -213,7 +213,7 @@ BEGIN
             VALUE "CompanyName", "FreeMan"
             VALUE "FileDescription", "Windows Explauncher"
             VALUE "InternalName", "Explauncher"
-            VALUE "LegalCopyright", "(c) FreeMan. All rights reserved."
+            VALUE "LegalCopyright", PRODUCT_COPYRIGHT_STR
             VALUE "OriginalFilename", "Explauncher.exe"
             VALUE "ProductName", "EXPLAUNCHER.EXE"
             VALUE "ProductVersion", PRODUCT_VERSION_STR

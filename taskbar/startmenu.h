@@ -426,6 +426,8 @@ protected:
     bool    ExecuteItem(const ModernStartMenuItem &item);
     bool    ExecuteSearchSelection();
     bool    AutocompleteSearchSelection();
+    void    AnimateShow();
+    void    AnimateHide();
     void    UpdatePlacement();
     void    ApplyWindowRegion();
     void    LayoutSearchEdit();
@@ -437,6 +439,8 @@ protected:
     void    InvalidateHotArea(HOT_AREA area, int index);
     void    UpdateSearchResults();
     void    SetSearchQuery(const String &query, bool sync_edit = true);
+    bool    TryGetContextMenuItem(HOT_AREA area, int index, ModernStartMenuItem **item);
+    bool    ShowContextMenuForHotArea(HOT_AREA area, int index, POINT screen_pt);
     LRESULT HandleSearchEditKeyDown(WPARAM wparam, LPARAM lparam);
     bool    HandleMouseWheel(short wheel_delta, POINT screen_pt);
     bool    AdjustScrollOffset(int *offset, int item_count, int visible_count, int delta_lines);
@@ -448,6 +452,7 @@ protected:
     int     GetVisibleRecommendedCount() const;
     int     GetVisibleAllProgramCount() const;
     int     GetVisibleDriveFolderCount() const;
+    int     GetVisibleRecentDocumentCount() const;
     int     GetVisibleSearchResultCount() const;
     int     GetVisibleSearchHomeRecentCount() const;
     int     GetVisibleSearchHomeTopAppCount() const;
@@ -474,6 +479,8 @@ protected:
     RECT    GetRecommendedButtonRect() const;
     RECT    GetRecommendedGridRect() const;
     RECT    GetRecommendedTileRect(int index) const;
+    RECT    GetRecentDocumentsListRect() const;
+    RECT    GetRecentDocumentRowRect(int index) const;
     RECT    GetFooterRect() const;
     RECT    GetProfileRect() const;
     RECT    GetSearchEditRect() const;
@@ -491,6 +498,7 @@ protected:
     int     _search_result_scroll;
     int     _all_program_scroll;
     int     _drive_folder_scroll;
+    int     _recent_document_scroll;
     int     _search_selected_index;
 
     HWND    _hwndSearchEdit;
@@ -506,6 +514,7 @@ protected:
     StartMenuShellDirs _recent_dirs;
 
     bool    _show_all_programs;
+    bool    _show_all_recents;
     bool    _search_active;
     HOT_AREA _hot_area;
     int     _hot_index;
@@ -564,7 +573,7 @@ protected:
 };
 
 
-#define RECENT_DOCS_COUNT   20  ///@todo read max. count of entries from registry
+#define RECENT_DOCS_COUNT   15  ///@todo read max. count of entries from registry
 
 /// "Recent Files" sub-start menu
 struct RecentStartMenu : public StartMenu {
