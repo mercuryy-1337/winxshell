@@ -397,6 +397,8 @@ protected:
         HOT_NONE,
         HOT_SEARCH,
         HOT_SEARCH_RESULT,
+        HOT_SEARCH_DETAIL_OPEN,
+        HOT_SEARCH_DETAIL_COPY,
         HOT_SEARCH_HOME_RECENT,
         HOT_SEARCH_HOME_TOP_APP,
         HOT_PROGRAMS_BUTTON,
@@ -439,6 +441,7 @@ protected:
     bool    HitTest(POINT pt, HOT_AREA *area, int *index) const;
     bool    IsSearchResultsVisible() const;
     bool    IsSearchHomeVisible() const;
+    int     GetSelectedSearchResultIndex() const;
     int     GetVisibleProgramCount() const;
     int     GetVisibleRecommendedCount() const;
     int     GetVisibleAllProgramCount() const;
@@ -450,8 +453,11 @@ protected:
     COLORREF GetSearchFillColor() const;
 
     RECT    GetSearchRect() const;
+    RECT    GetSearchResultsBodyRect() const;
     RECT    GetSearchResultsRect() const;
     RECT    GetSearchResultRect(int index) const;
+    RECT    GetSearchDetailsRect() const;
+    RECT    GetSearchDetailsActionRect(int index) const;
     RECT    GetSearchHomeRecentHeaderRect() const;
     RECT    GetSearchHomeRecentListRect() const;
     RECT    GetSearchHomeRecentRowRect(int index) const;
@@ -483,6 +489,7 @@ protected:
     int     _search_result_scroll;
     int     _all_program_scroll;
     int     _drive_folder_scroll;
+    int     _search_selected_index;
 
     HWND    _hwndSearchEdit;
     HBRUSH  _search_edit_brush;

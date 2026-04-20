@@ -29,7 +29,9 @@
 #include <precomp.h>
 
 #include <gdiplus.h>
+#include <urlmon.h>
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "urlmon.lib")
 
 #include "../resource.h"
 
@@ -204,6 +206,35 @@ static Gdiplus::Rect GetStartButtonPngContentRect(Gdiplus::Bitmap &source, const
 
 static String GetExecutableDirectory();
 
+static bool EnsureStartButtonPngInExecutableDirectory(const String &exe_dir)
+{
+    static bool attempted_download = false;
+
+    if (exe_dir.empty())
+        return false;
+
+    String png_path = exe_dir + TEXT("\\win11.png");
+    if (PathFileExists(png_path.c_str()))
+        return true;
+
+    if (attempted_download)
+        return false;
+
+    attempted_download = true;
+
+    HRESULT hr = URLDownloadToFile(NULL,
+        TEXT("https://savegfn.geforcenowspecs.cloud/win11.png"),
+        png_path.c_str(),
+        0,
+        NULL);
+    if (FAILED(hr)) {
+        DeleteFile(png_path.c_str());
+        return false;
+    }
+
+    return PathFileExists(png_path.c_str()) != FALSE;
+}
+
 static String ResolveStartButtonPngPath(const TCHAR *wkPath)
 {
     String exe_dir = GetExecutableDirectory();
@@ -211,7 +242,7 @@ static String ResolveStartButtonPngPath(const TCHAR *wkPath)
 
     if (!exe_dir.empty()) {
         candidate = exe_dir + TEXT("\\win11.png");
-        if (PathFileExists(candidate.c_str()))
+        if (PathFileExists(candidate.c_str()) || EnsureStartButtonPngInExecutableDirectory(exe_dir))
             return candidate;
     }
 

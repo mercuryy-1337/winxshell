@@ -87,14 +87,21 @@ void ExplorerGlobals::getModulePath()
 
 void ExplorerGlobals::getLuaAppEngine()
 {
-    String file(_T("WinXShell.lua"));
+    String file(_T("Explauncher.lua"));
     TCHAR luascript[MAX_PATH + 1] = { 0 };
 
 #ifndef _DEBUG
     file = JVAR("JVAR_MODULEPATH").ToString() + TEXT("\\") + file;
+    if (GetFileAttributes(file.c_str()) == INVALID_FILE_ATTRIBUTES)
+        file = JVAR("JVAR_MODULEPATH").ToString() + TEXT("\\WinXShell.lua");
+#else
+    if (GetFileAttributes(file.c_str()) == INVALID_FILE_ATTRIBUTES)
+        file = TEXT("WinXShell.lua");
 #endif
 
-    DWORD dw = GetEnvironmentVariable(TEXT("WINXSHELL_LUASCRIPT"), luascript, MAX_PATH);
+    DWORD dw = GetEnvironmentVariable(TEXT("EXPLAUNCHER_LUASCRIPT"), luascript, MAX_PATH);
+    if (dw == 0)
+        dw = GetEnvironmentVariable(TEXT("WINXSHELL_LUASCRIPT"), luascript, MAX_PATH);
     if (dw != 0) file = luascript;
 
     _lua = new LuaAppEngine(file);
@@ -103,7 +110,9 @@ void ExplorerGlobals::getLuaAppEngine()
 void ExplorerGlobals::getUIFolder()
 {
     TCHAR uifolder[MAX_PATH + 1] = { 0 };
-    DWORD dw = GetEnvironmentVariable(TEXT("WINXSHELL_UIFOLDER"), uifolder, MAX_PATH);
+    DWORD dw = GetEnvironmentVariable(TEXT("EXPLAUNCHER_UIFOLDER"), uifolder, MAX_PATH);
+    if (dw == 0)
+        dw = GetEnvironmentVariable(TEXT("WINXSHELL_UIFOLDER"), uifolder, MAX_PATH);
     if (dw == 0) {
         g_Globals._uifolder = TEXT("wxsUI");
     } else {
@@ -167,15 +176,22 @@ void ExplorerGlobals::getSystemInfo()
 
 void ExplorerGlobals::loadConfig()
 {
-    String jcfgfile = TEXT("WinXShell.jcfg");
+    String jcfgfile = TEXT("Explauncher.jcfg");
 #ifndef _DEBUG
     TCHAR buff[MAX_PATH + 1] = { 0 };
-    DWORD dw = GetEnvironmentVariable(TEXT("WINXSHELL_JCFGFILE"), buff, MAX_PATH);
+    DWORD dw = GetEnvironmentVariable(TEXT("EXPLAUNCHER_JCFGFILE"), buff, MAX_PATH);
+    if (dw == 0)
+        dw = GetEnvironmentVariable(TEXT("WINXSHELL_JCFGFILE"), buff, MAX_PATH);
     if (dw == 0) {
-        jcfgfile = JVAR("JVAR_MODULEPATH").ToString() + TEXT("\\WinXShell.jcfg");
+        jcfgfile = JVAR("JVAR_MODULEPATH").ToString() + TEXT("\\Explauncher.jcfg");
+        if (GetFileAttributes(jcfgfile.c_str()) == INVALID_FILE_ATTRIBUTES)
+            jcfgfile = JVAR("JVAR_MODULEPATH").ToString() + TEXT("\\WinXShell.jcfg");
     } else {
         jcfgfile = JVAR("JVAR_MODULEPATH").ToString() + TEXT("\\") + buff;
     }
+#else
+    if (GetFileAttributes(jcfgfile.c_str()) == INVALID_FILE_ATTRIBUTES)
+        jcfgfile = TEXT("WinXShell.jcfg");
 #endif
     Load_JCfg(jcfgfile);
 }
@@ -199,14 +215,16 @@ void ExplorerGlobals::InitLog()
     String logPath = TEXT("");
     if (g_Globals._log_file) return;
 
-    if (GetEnvironmentVariable(TEXT("WINXSHELL_LOGFILE"), tmpPath, MAX_PATH) != 0) {
+    if (GetEnvironmentVariable(TEXT("EXPLAUNCHER_LOGFILE"), tmpPath, MAX_PATH) != 0 ||
+        GetEnvironmentVariable(TEXT("WINXSHELL_LOGFILE"), tmpPath, MAX_PATH) != 0) {
         logPath = tmpPath;
-    }  else if (GetEnvironmentVariable(TEXT("WINXSHELL_LOGNAME"), tmpPath, MAX_PATH) != 0) {
+    }  else if (GetEnvironmentVariable(TEXT("EXPLAUNCHER_LOGNAME"), tmpPath, MAX_PATH) != 0 ||
+        GetEnvironmentVariable(TEXT("WINXSHELL_LOGNAME"), tmpPath, MAX_PATH) != 0) {
         logPath = FmtString(TEXT("%s.%d.log"), tmpPath, GetCurrentProcessId());
     } else {
         tmpPath[0] = '\0';
         GetTempPath(MAX_PATH, tmpPath);
-        logPath = FmtString(TEXT("%sWinXShell.%d.log"), tmpPath, GetCurrentProcessId());
+        logPath = FmtString(TEXT("%sExplauncher.%d.log"), tmpPath, GetCurrentProcessId());
     }
 
     DWORD dwCreate = (dwAccess == GENERIC_WRITE) ? CREATE_ALWAYS :

@@ -324,7 +324,7 @@ private:
 ;@="&Property" I don't found out the resource with shortcut for every language now, use 4177 instead.
 
 [HKEY_CLASSES_ROOT\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shell\properties\command]
-@="WinXShell.exe -ui -jcfg UI_SystemInfo\\main.jcfg"
+@="Explauncher.exe -ui -jcfg UI_SystemInfo\\main.jcfg"
 */
 void update_property_handler()
 {
@@ -349,7 +349,7 @@ void update_property_handler()
     /*reg_prop.Write(TEXT("Position"), TEXT("Bottom"));
 
     CReg reg_prop_cmd(HKEY_CLASSES_ROOT, TEXT("CLSID\\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\shell\\Property\\command"));
-    reg_prop_cmd.Write(NULL, TEXT("WinXShell.exe -ui -jcfg UI_SystemInfo\\main.jcfg"));
+    reg_prop_cmd.Write(NULL, TEXT("Explauncher.exe -ui -jcfg UI_SystemInfo\\main.jcfg"));
 
     CReg reg_no_default_prop(HKEY_LOCAL_MACHINE, TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"));
     reg_no_default_prop.Write(TEXT("NoPropertiesMyComputer"), 1);*/

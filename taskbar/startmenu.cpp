@@ -1788,6 +1788,30 @@ static void DrawSearchGlyphPrimitive(HDC hdc, const RECT &rect, COLORREF color)
     graphics.DrawLine(&pen, handle_start, handle_end);
 }
 
+static void DrawVerticalScrollIndicator(HDC hdc, const RECT &list_rect, int item_count, int visible_count, int scroll_offset)
+{
+    if (item_count <= visible_count || visible_count <= 0 || !IsNonEmptyRect(list_rect))
+        return;
+
+    RECT track_rect = list_rect;
+    track_rect.left = max(track_rect.left, track_rect.right - DPI_SX(5));
+    track_rect.right -= DPI_SX(1);
+    track_rect.top += DPI_SY(4);
+    track_rect.bottom -= DPI_SY(4);
+    if (!IsNonEmptyRect(track_rect))
+        return;
+
+    FillRoundedRectPrimitive(hdc, track_rect, RGB(60, 64, 69), DPI_SX(4));
+
+    int track_height = track_rect.bottom - track_rect.top;
+    int thumb_height = max(DPI_SY(24), track_height * visible_count / max(1, item_count));
+    int max_offset = max(1, item_count - visible_count);
+    int thumb_offset = (track_height - thumb_height) * scroll_offset / max_offset;
+    RECT thumb_rect = MakeRectWH(track_rect.left, track_rect.top + thumb_offset,
+        track_rect.right - track_rect.left, thumb_height);
+    FillRoundedRectPrimitive(hdc, thumb_rect, RGB(154, 159, 166), DPI_SX(4));
+}
+
 static void DrawChevronRightPrimitive(HDC hdc, const RECT &rect, COLORREF color)
 {
     HPEN pen = CreatePen(PS_SOLID, max(1, DPI_SX(2)), color);
@@ -1881,8 +1905,56 @@ static String EnsureTrailingBackslash(String path)
     return path;
 }
 
+static bool TryExpandSearchEnvironmentCandidate(const String &candidate, String &expanded)
+{
+    TCHAR buffer[MAX_PATH * 8] = { 0 };
+    DWORD count = ExpandEnvironmentStrings(candidate.c_str(), buffer, COUNTOF(buffer));
+    if (count == 0 || count > COUNTOF(buffer))
+        return false;
+
+    if (!_tcscmp(buffer, candidate.c_str()))
+        return false;
+
+    expanded = buffer;
+    return true;
+}
+
+static String ExpandSearchEnvironment(String query)
+{
+    String expanded = query;
+    String candidate_expansion;
+
+    if (TryExpandSearchEnvironmentCandidate(expanded, candidate_expansion))
+        expanded = candidate_expansion;
+
+    size_t separator = expanded.find_first_of(TEXT("\\/"));
+    size_t prefix_length = separator == String::npos ? expanded.length() : separator;
+    if (prefix_length == 0)
+        return expanded;
+
+    String prefix = expanded.substr(0, prefix_length);
+    if (prefix.find(TEXT('%')) != String::npos || prefix.find(TEXT(':')) != String::npos)
+        return expanded;
+
+    String env_candidate = TEXT("%") + prefix + TEXT("%");
+    if (separator != String::npos)
+        env_candidate += expanded.substr(separator);
+
+    if (TryExpandSearchEnvironmentCandidate(env_candidate, candidate_expansion))
+        return candidate_expansion;
+
+    return expanded;
+}
+
 static String NormalizeSearchPath(String query)
 {
+    for (size_t index = 0; index < query.length(); ++index) {
+        if (query.at(index) == TEXT('/'))
+            query.at(index) = TEXT('\\');
+    }
+
+    query = ExpandSearchEnvironment(query);
+
     for (size_t index = 0; index < query.length(); ++index) {
         if (query.at(index) == TEXT('/'))
             query.at(index) = TEXT('\\');
@@ -1970,6 +2042,107 @@ static bool IsExecutableLaunchPath(const String &launch_path)
 static bool TryGetRecentApplicationPath(Entry *entry, String &launch_path)
 {
     return TryGetEntryLaunchPath(entry, launch_path) && IsExecutableLaunchPath(launch_path);
+}
+
+static bool TryResolveStartMenuItemPath(const ModernStartMenuItem &item, String &resolved_path)
+{
+    if (!item._path.empty()) {
+        resolved_path = NormalizeSearchPath(item._path);
+        return true;
+    }
+
+    if (item._entry)
+        return TryGetEntryLaunchPath(item._entry, resolved_path);
+
+    return false;
+}
+
+static String TrimTrailingBackslash(String path)
+{
+    while (path.length() > 3 && path.at(path.length() - 1) == TEXT('\\'))
+        path.erase(path.length() - 1);
+
+    return path;
+}
+
+static String GetSearchResultTitleText(const ModernStartMenuItem &item)
+{
+    String resolved_path;
+    if (TryResolveStartMenuItemPath(item, resolved_path)) {
+        DWORD attributes = GetFileAttributes(resolved_path.c_str());
+        if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY))
+            return EnsureTrailingBackslash(resolved_path);
+        return resolved_path;
+    }
+
+    return item._title;
+}
+
+static String GetSearchResultLocationText(const ModernStartMenuItem &item)
+{
+    String resolved_path;
+    if (TryResolveStartMenuItemPath(item, resolved_path))
+        return TrimTrailingBackslash(resolved_path);
+
+    return item._meta_text;
+}
+
+static String GetSearchResultTypeText(const ModernStartMenuItem &item)
+{
+    String resolved_path;
+    if (TryResolveStartMenuItemPath(item, resolved_path)) {
+        DWORD attributes = GetFileAttributes(resolved_path.c_str());
+        if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY))
+            return TEXT("File folder");
+
+        SHFILEINFO sfi = { 0 };
+        DWORD attr = attributes == INVALID_FILE_ATTRIBUTES ? FILE_ATTRIBUTE_NORMAL : attributes;
+        if (SHGetFileInfo(resolved_path.c_str(), attr, &sfi, sizeof(sfi), SHGFI_TYPENAME | SHGFI_USEFILEATTRIBUTES) && sfi.szTypeName[0])
+            return String(sfi.szTypeName);
+    }
+
+    if (!item._meta_text.empty())
+        return item._meta_text;
+
+    return TEXT("Search result");
+}
+
+static bool CopyTextToClipboard(HWND hwnd, const String &text)
+{
+    if (text.empty() || !OpenClipboard(hwnd))
+        return false;
+
+    EmptyClipboard();
+
+    SIZE_T byte_count = (text.length() + 1) * sizeof(TCHAR);
+    HGLOBAL global = GlobalAlloc(GMEM_MOVEABLE, byte_count);
+    if (!global) {
+        CloseClipboard();
+        return false;
+    }
+
+    void *memory = GlobalLock(global);
+    if (!memory) {
+        GlobalFree(global);
+        CloseClipboard();
+        return false;
+    }
+
+    memcpy(memory, text.c_str(), byte_count);
+    GlobalUnlock(global);
+
+#ifdef UNICODE
+    if (!SetClipboardData(CF_UNICODETEXT, global)) {
+#else
+    if (!SetClipboardData(CF_TEXT, global)) {
+#endif
+        GlobalFree(global);
+        CloseClipboard();
+        return false;
+    }
+
+    CloseClipboard();
+    return true;
 }
 
 static ICON_ID GetPathQueryIconId(LPCTSTR path, DWORD file_attributes)
@@ -2061,6 +2234,7 @@ StartMenuRoot::StartMenuRoot(HWND hwnd, const StartMenuRootCreateInfo &info)
          _search_result_scroll(0),
          _all_program_scroll(0),
          _drive_folder_scroll(0),
+         _search_selected_index(-1),
          _hwndSearchEdit(NULL),
          _search_edit_brush(NULL),
                  _search_edit_fill(CLR_INVALID),
@@ -2150,6 +2324,17 @@ bool StartMenuRoot::IsSearchHomeVisible() const
     return _search_active && _search_query.empty();
 }
 
+int StartMenuRoot::GetSelectedSearchResultIndex() const
+{
+    if (_search_results.empty())
+        return -1;
+
+    if (_search_selected_index >= 0 && _search_selected_index < (int)_search_results.size())
+        return _search_selected_index;
+
+    return 0;
+}
+
 COLORREF StartMenuRoot::GetSearchFillColor() const
 {
     return (_search_active || IsSearchResultsVisible()) ? RGB(46, 49, 54) : RGB(39, 42, 46);
@@ -2219,6 +2404,19 @@ RECT StartMenuRoot::GetSearchRect() const
         client.right - metrics._outer_padding * 2, metrics._search_height);
 }
 
+RECT StartMenuRoot::GetSearchResultsBodyRect() const
+{
+    ClientRect client(_hwnd);
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    RECT footer_rect = GetFooterRect();
+    RECT header_rect = GetProgramsHeaderRect();
+
+    return MakeRectWH(metrics._outer_padding,
+        header_rect.bottom + metrics._section_item_gap,
+        client.right - metrics._outer_padding * 2,
+        max(0, footer_rect.top - metrics._outer_padding - (header_rect.bottom + metrics._section_item_gap)));
+}
+
 RECT StartMenuRoot::GetSearchEditRect() const
 {
     RECT search_rect = GetSearchRect();
@@ -2233,15 +2431,19 @@ RECT StartMenuRoot::GetSearchEditRect() const
 
 RECT StartMenuRoot::GetSearchResultsRect() const
 {
-    ClientRect client(_hwnd);
-    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
-    RECT footer_rect = GetFooterRect();
-    RECT header_rect = GetProgramsHeaderRect();
+    RECT body_rect = GetSearchResultsBodyRect();
+    int column_gap = DPI_SX(18);
+    int details_min_width = DPI_SX(240);
+    int body_width = body_rect.right - body_rect.left;
+    int list_width = max(DPI_SX(250), min(DPI_SX(330), (body_width - column_gap) * 43 / 100));
 
-    return MakeRectWH(metrics._outer_padding,
-        header_rect.bottom + metrics._section_item_gap,
-        client.right - metrics._outer_padding * 2,
-        max(0, footer_rect.top - metrics._outer_padding - (header_rect.bottom + metrics._section_item_gap)));
+    if (body_width - list_width - column_gap < details_min_width)
+        list_width = max(DPI_SX(220), body_width - column_gap - details_min_width);
+
+    return MakeRectWH(body_rect.left,
+        body_rect.top,
+        max(0, list_width),
+        body_rect.bottom - body_rect.top);
 }
 
 RECT StartMenuRoot::GetSearchResultRect(int index) const
@@ -2253,8 +2455,39 @@ RECT StartMenuRoot::GetSearchResultRect(int index) const
 
     return MakeRectWH(list_rect.left,
         list_rect.top + visible_index * (row_height + row_gap),
-        list_rect.right - list_rect.left,
+        max(0, (list_rect.right - list_rect.left) - DPI_SX(10)),
         row_height);
+}
+
+RECT StartMenuRoot::GetSearchDetailsRect() const
+{
+    RECT body_rect = GetSearchResultsBodyRect();
+    RECT list_rect = GetSearchResultsRect();
+    int column_gap = DPI_SX(18);
+
+    return MakeRectWH(list_rect.right + column_gap,
+        body_rect.top,
+        max(0, body_rect.right - (list_rect.right + column_gap)),
+        body_rect.bottom - body_rect.top);
+}
+
+RECT StartMenuRoot::GetSearchDetailsActionRect(int index) const
+{
+    RECT details_rect = GetSearchDetailsRect();
+    int outer_padding = DPI_SX(18);
+    int item_gap = DPI_SY(8);
+    int action_height = DPI_SY(34);
+    int section_height = action_height * 2 + item_gap + DPI_SY(18);
+    RECT section_rect = MakeRectWH(details_rect.left + outer_padding,
+        details_rect.bottom - outer_padding - section_height,
+        max(0, (details_rect.right - details_rect.left) - outer_padding * 2),
+        section_height);
+    int top = section_rect.top + DPI_SY(18) + index * (action_height + item_gap);
+
+    return MakeRectWH(section_rect.left,
+        top,
+        section_rect.right - section_rect.left,
+        action_height);
 }
 
 RECT StartMenuRoot::GetSearchHomeRecentHeaderRect() const
@@ -2481,7 +2714,7 @@ RECT StartMenuRoot::GetAllProgramRowRect(int index) const
 
     return MakeRectWH(list_rect.left,
         list_rect.top + visible_index * (row_height + row_gap),
-        list_rect.right - list_rect.left,
+        max(0, (list_rect.right - list_rect.left) - DPI_SX(10)),
         row_height);
 }
 
@@ -2519,7 +2752,7 @@ RECT StartMenuRoot::GetDriveFolderRowRect(int index) const
 
     return MakeRectWH(list_rect.left,
         list_rect.top + visible_index * (row_height + row_gap),
-        list_rect.right - list_rect.left,
+        max(0, (list_rect.right - list_rect.left) - DPI_SX(10)),
         row_height);
 }
 
@@ -2774,6 +3007,27 @@ void StartMenuRoot::RebuildModernContent()
 
 void StartMenuRoot::EnsureItemIcon(ModernStartMenuItem &item, int icon_size)
 {
+    if (!item._path.empty() &&
+        (item._icon_id <= ICID_NONE || item._icon_id == ICID_FOLDER || item._icon_id == ICID_APP || item._icon_id == ICID_SEARCH_DOC)) {
+        String normalized_path = NormalizeSearchPath(item._path);
+        DWORD file_attributes = GetFileAttributes(normalized_path.c_str());
+
+        if (file_attributes != INVALID_FILE_ATTRIBUTES) {
+            item._icon_id = (ICON_ID)g_Globals._icon_cache.extract(normalized_path.c_str(),
+                ICF_FROM_ICON_SIZE(icon_size) | ICF_NOLINKOVERLAY);
+            if (item._icon_id > ICID_NONE)
+                return;
+
+            if (file_attributes & FILE_ATTRIBUTE_DIRECTORY) {
+                item._icon_id = ICID_FOLDER;
+                return;
+            }
+
+            item._icon_id = PathMatchSpec(normalized_path.c_str(), TEXT("*.exe")) ? ICID_APP : ICID_SEARCH_DOC;
+            return;
+        }
+    }
+
     if (item._icon_id > ICID_NONE)
         return;
 
@@ -2827,8 +3081,9 @@ bool StartMenuRoot::ExecuteSearchSelection()
         return false;
     }
 
-    if (_hot_area == HOT_SEARCH_RESULT && _hot_index >= 0 && _hot_index < (int)_search_results.size())
-        return ExecuteItem(_search_results[_hot_index]);
+    int selected_index = GetSelectedSearchResultIndex();
+    if (selected_index >= 0 && selected_index < (int)_search_results.size())
+        return ExecuteItem(_search_results[selected_index]);
 
     if (!_search_results.empty())
         return ExecuteItem(_search_results[0]);
@@ -2838,10 +3093,11 @@ bool StartMenuRoot::ExecuteSearchSelection()
 
 bool StartMenuRoot::AutocompleteSearchSelection()
 {
-    if (_hot_area != HOT_SEARCH_RESULT || _hot_index < 0 || _hot_index >= (int)_search_results.size())
+    int selected_index = GetSelectedSearchResultIndex();
+    if (selected_index < 0 || selected_index >= (int)_search_results.size())
         return false;
 
-    const ModernStartMenuItem &item = _search_results[_hot_index];
+    const ModernStartMenuItem &item = _search_results[selected_index];
     if (item._autocomplete_text.empty())
         return false;
 
@@ -2857,11 +3113,11 @@ void StartMenuRoot::UpdateSearchResults()
     if (_search_query.empty())
         return;
 
-    bool path_query = LooksLikePathQuery(_search_query);
+    String normalized_query = NormalizeSearchPath(_search_query);
+    bool path_query = LooksLikePathQuery(normalized_query);
     const int max_results = path_query ? 96 : 32;
     String query_lower = _search_query;
     query_lower.toLower();
-    String normalized_query = NormalizeSearchPath(_search_query);
     bool query_path_exists = PathFileExists(normalized_query.c_str()) != FALSE;
     bool query_is_directory = query_path_exists && PathIsDirectory(normalized_query.c_str()) != FALSE;
 
@@ -2971,9 +3227,11 @@ void StartMenuRoot::SetSearchQuery(const String &query, bool sync_edit)
     if (IsSearchResultsVisible() && !_search_results.empty()) {
         _hot_area = HOT_SEARCH_RESULT;
         _hot_index = 0;
+        _search_selected_index = 0;
     } else {
         _hot_area = HOT_SEARCH;
         _hot_index = -1;
+        _search_selected_index = -1;
     }
 
     if (sync_edit)
@@ -3095,6 +3353,7 @@ LRESULT StartMenuRoot::HandleSearchEditKeyDown(WPARAM wparam, LPARAM lparam)
                     ++_search_result_scroll;
 
                 _hot_area = HOT_SEARCH_RESULT;
+                _search_selected_index = _hot_index;
                 InvalidateRect(_hwnd, NULL, FALSE);
             }
             return 0;
@@ -3111,6 +3370,7 @@ LRESULT StartMenuRoot::HandleSearchEditKeyDown(WPARAM wparam, LPARAM lparam)
                     --_search_result_scroll;
 
                 _hot_area = HOT_SEARCH_RESULT;
+                _search_selected_index = _hot_index;
                 InvalidateRect(_hwnd, NULL, FALSE);
             }
             return 0;
@@ -3120,6 +3380,7 @@ LRESULT StartMenuRoot::HandleSearchEditKeyDown(WPARAM wparam, LPARAM lparam)
             if (visible_count > 0 && AdjustScrollOffset(&_search_result_scroll, (int)_search_results.size(), visible_count, visible_count)) {
                 _hot_index = min((int)_search_results.size() - 1, _search_result_scroll);
                 _hot_area = HOT_SEARCH_RESULT;
+                _search_selected_index = _hot_index;
                 InvalidateRect(_hwnd, NULL, FALSE);
             }
             return 0;
@@ -3129,6 +3390,7 @@ LRESULT StartMenuRoot::HandleSearchEditKeyDown(WPARAM wparam, LPARAM lparam)
             if (visible_count > 0 && AdjustScrollOffset(&_search_result_scroll, (int)_search_results.size(), visible_count, -visible_count)) {
                 _hot_index = _search_result_scroll;
                 _hot_area = HOT_SEARCH_RESULT;
+                _search_selected_index = _hot_index;
                 InvalidateRect(_hwnd, NULL, FALSE);
             }
             return 0;
@@ -3173,6 +3435,10 @@ RECT StartMenuRoot::GetHotRect(HOT_AREA area, int index) const
         if (index >= _search_result_scroll && index < _search_result_scroll + GetVisibleSearchResultCount())
             return GetSearchResultRect(index);
         break;
+    case HOT_SEARCH_DETAIL_OPEN:
+        return GetSearchDetailsActionRect(0);
+    case HOT_SEARCH_DETAIL_COPY:
+        return GetSearchDetailsActionRect(1);
     case HOT_SEARCH_HOME_RECENT:
         if (index >= 0 && index < GetVisibleSearchHomeRecentCount())
             return GetSearchHomeRecentRowRect(index);
@@ -3271,6 +3537,18 @@ bool StartMenuRoot::HitTest(POINT pt, HOT_AREA *area, int *index) const
             }
         }
 
+        rect = GetSearchDetailsActionRect(0);
+        if (PtInRect(&rect, pt)) {
+            if (area) *area = HOT_SEARCH_DETAIL_OPEN;
+            return true;
+        }
+
+        rect = GetSearchDetailsActionRect(1);
+        if (PtInRect(&rect, pt)) {
+            if (area) *area = HOT_SEARCH_DETAIL_COPY;
+            return true;
+        }
+
         return false;
     }
 
@@ -3335,8 +3613,12 @@ void StartMenuRoot::UpdateHotState(POINT pt)
 {
     HOT_AREA hot_area = HOT_NONE;
     int hot_index = -1;
+    int old_selected_index = _search_selected_index;
 
     HitTest(pt, &hot_area, &hot_index);
+
+    if (hot_area == HOT_SEARCH_RESULT && hot_index >= 0)
+        _search_selected_index = hot_index;
 
     if (hot_area != _hot_area || hot_index != _hot_index) {
         HOT_AREA old_area = _hot_area;
@@ -3345,6 +3627,11 @@ void StartMenuRoot::UpdateHotState(POINT pt)
         _hot_index = hot_index;
         InvalidateHotArea(old_area, old_index);
         InvalidateHotArea(_hot_area, _hot_index);
+    }
+
+    if (old_selected_index != _search_selected_index && IsSearchResultsVisible()) {
+        RECT details_rect = GetSearchDetailsRect();
+        InvalidateRect(_hwnd, &details_rect, FALSE);
     }
 }
 
@@ -3584,9 +3871,24 @@ LRESULT StartMenuRoot::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
             if (hot_index >= 0 && hot_index < (int)_search_results.size()) {
                 _hot_area = HOT_SEARCH_RESULT;
                 _hot_index = hot_index;
+                _search_selected_index = hot_index;
                 ExecuteSearchSelection();
             }
             break;
+
+        case HOT_SEARCH_DETAIL_OPEN: {
+            int selected_index = GetSelectedSearchResultIndex();
+            if (selected_index >= 0 && selected_index < (int)_search_results.size())
+                ExecuteItem(_search_results[selected_index]);
+            break;
+        }
+
+        case HOT_SEARCH_DETAIL_COPY: {
+            int selected_index = GetSelectedSearchResultIndex();
+            if (selected_index >= 0 && selected_index < (int)_search_results.size())
+                CopyTextToClipboard(_hwnd, GetSearchResultLocationText(_search_results[selected_index]));
+            break;
+        }
 
         case HOT_SEARCH_HOME_RECENT:
             if (hot_index >= 0 && hot_index < GetVisibleSearchHomeRecentCount())
@@ -3654,12 +3956,17 @@ LRESULT StartMenuRoot::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
         if (IsSearchResultsVisible()) {
             if (wparam == VK_DOWN) {
                 if (!_search_results.empty()) {
+                    int visible_count = GetVisibleSearchResultCount();
                     if (_hot_area != HOT_SEARCH_RESULT)
-                        _hot_index = 0;
+                        _hot_index = _search_result_scroll;
                     else if (_hot_index < (int)_search_results.size() - 1)
                         ++_hot_index;
 
+                    if (visible_count > 0 && _hot_index >= _search_result_scroll + visible_count)
+                        ++_search_result_scroll;
+
                     _hot_area = HOT_SEARCH_RESULT;
+                    _search_selected_index = _hot_index;
                     InvalidateRect(_hwnd, NULL, FALSE);
                 }
                 return 0;
@@ -3667,12 +3974,17 @@ LRESULT StartMenuRoot::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
 
             if (wparam == VK_UP) {
                 if (!_search_results.empty()) {
+                    int visible_count = GetVisibleSearchResultCount();
                     if (_hot_area != HOT_SEARCH_RESULT)
-                        _hot_index = 0;
+                        _hot_index = _search_result_scroll;
                     else if (_hot_index > 0)
                         --_hot_index;
 
+                    if (visible_count > 0 && _hot_index < _search_result_scroll)
+                        --_search_result_scroll;
+
                     _hot_area = HOT_SEARCH_RESULT;
+                    _search_selected_index = _hot_index;
                     InvalidateRect(_hwnd, NULL, FALSE);
                 }
                 return 0;
@@ -3832,12 +4144,15 @@ void StartMenuRoot::Paint(HDC canvas)
         DrawText(canvas, TEXT("Results"), -1, &programs_header_rect,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
+        int selected_index = GetSelectedSearchResultIndex();
+
         for (int index = _search_result_scroll; index < _search_result_scroll + GetVisibleSearchResultCount(); ++index) {
             RECT item_rect = GetSearchResultRect(index);
             ModernStartMenuItem &item = _search_results[index];
             EnsureItemIcon(item, DPI_SX(20));
 
-            COLORREF tile_color = (_hot_area == HOT_SEARCH_RESULT && _hot_index == index) ? list_hover_fill : list_fill;
+            bool is_hot = _hot_area == HOT_SEARCH_RESULT && _hot_index == index;
+            COLORREF tile_color = is_hot ? list_hover_fill : list_fill;
             FillRoundedRectPrimitive(canvas, item_rect, tile_color, DPI_SX(12), list_border);
 
             HBRUSH tile_brush = CreateSolidBrush(tile_color);
@@ -3865,6 +4180,87 @@ void StartMenuRoot::Paint(HDC canvas)
             SetTextColor(canvas, meta_text);
             DrawText(canvas, item._meta_text.empty() ? TEXT("Suggestion") : item._meta_text.c_str(), -1, &meta_rect,
                 DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        }
+
+        DrawVerticalScrollIndicator(canvas, GetSearchResultsRect(), (int)_search_results.size(), GetVisibleSearchResultCount(), _search_result_scroll);
+
+        RECT details_rect = GetSearchDetailsRect();
+        FillRoundedRectPrimitive(canvas, details_rect, recommended_fill, DPI_SX(14), recommended_border);
+
+        if (selected_index >= 0 && selected_index < (int)_search_results.size()) {
+            ModernStartMenuItem &selected_item = _search_results[selected_index];
+            EnsureItemIcon(selected_item, DPI_SX(32));
+
+            String title_text = GetSearchResultTitleText(selected_item);
+            String type_text = GetSearchResultTypeText(selected_item);
+            String location_text = GetSearchResultLocationText(selected_item);
+            RECT content_rect = details_rect;
+            InflateRect(&content_rect, -DPI_SX(18), -DPI_SY(18));
+
+            HBRUSH details_brush = CreateSolidBrush(recommended_fill);
+            int icon_left = content_rect.left + ((content_rect.right - content_rect.left - DPI_SX(40)) / 2);
+            int icon_top = content_rect.top + DPI_SY(8);
+            g_Globals._icon_cache.get_icon(selected_item._icon_id).draw(canvas, icon_left, icon_top,
+                DPI_SX(40), DPI_SX(40), recommended_fill, details_brush);
+            DeleteObject(details_brush);
+
+            RECT title_rect = content_rect;
+            title_rect.top = icon_top + DPI_SY(56);
+            title_rect.bottom = title_rect.top + DPI_SY(40);
+            SelectObject(canvas, _section_font ? _section_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, item_text);
+            DrawText(canvas, title_text.c_str(), -1, &title_rect,
+                DT_CENTER | DT_TOP | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+            RECT type_rect = content_rect;
+            type_rect.top = title_rect.bottom + DPI_SY(4);
+            type_rect.bottom = type_rect.top + DPI_SY(18);
+            SelectObject(canvas, _meta_font ? _meta_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, meta_text);
+            DrawText(canvas, type_text.c_str(), -1, &type_rect,
+                DT_CENTER | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+            RECT separator_rect = MakeRect(content_rect.left, type_rect.bottom + DPI_SY(18), content_rect.right, type_rect.bottom + DPI_SY(19));
+            HBRUSH separator_brush = CreateSolidBrush(recommended_border);
+            FillRect(canvas, &separator_rect, separator_brush);
+
+            RECT location_label_rect = content_rect;
+            location_label_rect.top = separator_rect.bottom + DPI_SY(14);
+            location_label_rect.bottom = location_label_rect.top + DPI_SY(16);
+            SelectObject(canvas, _meta_font ? _meta_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, meta_text);
+            DrawText(canvas, TEXT("Location"), -1, &location_label_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+
+            RECT location_rect = content_rect;
+            location_rect.top = location_label_rect.bottom + DPI_SY(6);
+            location_rect.bottom = location_rect.top + DPI_SY(34);
+            SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, item_text);
+            DrawText(canvas, location_text.c_str(), -1, &location_rect,
+                DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+            RECT action_separator_rect = MakeRect(content_rect.left, GetSearchDetailsActionRect(0).top - DPI_SY(12), content_rect.right, GetSearchDetailsActionRect(0).top - DPI_SY(11));
+            FillRect(canvas, &action_separator_rect, separator_brush);
+            DeleteObject(separator_brush);
+
+            RECT open_rect = GetSearchDetailsActionRect(0);
+            COLORREF open_fill = _hot_area == HOT_SEARCH_DETAIL_OPEN ? action_hover_fill : action_fill;
+            FillRoundedRectPrimitive(canvas, open_rect, open_fill, DPI_SX(10), action_border);
+            RECT open_text_rect = open_rect;
+            open_text_rect.left += DPI_SX(14);
+            SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, RGB(236, 239, 242));
+            DrawText(canvas, TEXT("Open"), -1, &open_text_rect,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+            RECT copy_rect = GetSearchDetailsActionRect(1);
+            COLORREF copy_fill = _hot_area == HOT_SEARCH_DETAIL_COPY ? action_hover_fill : action_fill;
+            FillRoundedRectPrimitive(canvas, copy_rect, copy_fill, DPI_SX(10), action_border);
+            RECT copy_text_rect = copy_rect;
+            copy_text_rect.left += DPI_SX(14);
+            DrawText(canvas, TEXT("Copy path"), -1, &copy_text_rect,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         }
 
         if (GetVisibleSearchResultCount() == 0) {
@@ -4005,6 +4401,8 @@ void StartMenuRoot::Paint(HDC canvas)
                 DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
         }
 
+        DrawVerticalScrollIndicator(canvas, GetAllAppsListRect(), (int)_all_program_items.size(), GetVisibleAllProgramCount(), _all_program_scroll);
+
         RECT drive_header_rect = GetDriveFoldersHeaderRect();
         SelectObject(canvas, _section_font ? _section_font : g_Globals._hDefaultFont);
         SetTextColor(canvas, section_text);
@@ -4052,6 +4450,8 @@ void StartMenuRoot::Paint(HDC canvas)
             DrawText(canvas, TEXT("No visible folders in C:\\."), -1, &empty_rect,
                 DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
         }
+
+        DrawVerticalScrollIndicator(canvas, GetDriveFoldersListRect(), (int)_drive_folder_items.size(), GetVisibleDriveFolderCount(), _drive_folder_scroll);
     } else {
         DrawText(canvas, TEXT("Pinned"), -1, &programs_header_rect,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);

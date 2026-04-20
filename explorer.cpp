@@ -421,7 +421,7 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
             "\r\n"
             "-desktop        start in desktop mode regardless of an already running shell\r\n"
             "\r\n"
-            "-install        replace previous shell application with WinXShell\r\n"
+            "-install        replace previous shell application with Explauncher\r\n"
             "\r\n"
             "-noautostart    disable autostarts\r\n"
             "-autostart    enable autostarts regardless of debug build\r\n"
@@ -429,11 +429,12 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
             "-console        open debug console\r\n"
             "\r\n"
             "-break        activate debugger breakpoint\r\n",
-            "WinXShell - command line options", MB_OK);
+            "Explauncher - command line options", MB_OK);
         return 0;
     }
 
 #ifdef _DEBUG
+    SetEnvironmentVariable(TEXT("EXPLAUNCHER_DEBUG"), TEXT("1"));
     SetEnvironmentVariable(TEXT("WINXSHELL_DEBUG"), TEXT("1"));
 #endif
 
@@ -467,7 +468,7 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
         }
 
         handle_console(g_Globals._log);
-        LOGA("starting winxshell console log\n");
+        LOGA("starting explauncher console log\n");
     }
 
     if (_tcsstr(ext_options, TEXT("-winpe"))) {
@@ -482,9 +483,9 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
         any_desktop_running = FALSE;
     }
 
-    // command line option "-install" to replace previous shell application with WinXShell
+    // command line option "-install" to replace previous shell application with Explauncher
     if (_tcsstr(ext_options, TEXT("-install"))) {
-        // install WinXShell into the registry
+        // install Explauncher into the registry
         TCHAR path[MAX_PATH];
 
         int l = GetModuleFileName(0, path, COUNTOF(path));
@@ -539,6 +540,7 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
     g_Globals.ReadPersistent();
 
     String mpath = JVAR("JVAR_MODULEPATH").ToString();
+    SetEnvironmentVariable(TEXT("EXPLAUNCHER_MODULEPATH"), mpath);
     SetEnvironmentVariable(TEXT("WINXSHELL_MODULEPATH"), mpath);
 
     // for loading UI Resources, lua_helper
