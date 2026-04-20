@@ -350,12 +350,37 @@ struct StartMenuRootCreateInfo {
     int _icon_size;
 };
 
+struct ModernStartMenuItem {
+    ModernStartMenuItem()
+        : _id(0), _icon_id(ICID_NONE), _entry(NULL), _is_command(false)
+    {
+    }
+
+    ModernStartMenuItem(int id, LPCTSTR title, ICON_ID icon_id, Entry *entry = NULL, bool is_command = false, LPCTSTR meta_text = NULL)
+        : _id(id),
+          _title(title ? title : TEXT("")),
+          _meta_text(meta_text ? meta_text : TEXT("")),
+          _icon_id(icon_id),
+          _entry(entry),
+          _is_command(is_command)
+    {
+    }
+
+    int     _id;
+    String  _title;
+    String  _meta_text;
+    ICON_ID _icon_id;
+    Entry  *_entry;
+    bool    _is_command;
+};
+
 
 /// Startmenu root window
 struct StartMenuRoot : public StartMenuHandler {
     typedef StartMenuHandler super;
 
     StartMenuRoot(HWND hwnd, const StartMenuRootCreateInfo &info);
+    ~StartMenuRoot();
 
     static HWND Create(HWND hwndDesktopBar, int icon_size);
     void    TrackStartmenu();
@@ -366,19 +391,72 @@ struct StartMenuRoot : public StartMenuHandler {
     HWND    _hwndStartButton;
 
 protected:
+    enum HOT_AREA {
+        HOT_NONE,
+        HOT_SEARCH,
+        HOT_PROGRAMS_BUTTON,
+        HOT_RECOMMENDED_BUTTON,
+        HOT_PROGRAM,
+        HOT_RECOMMENDED,
+        HOT_PROFILE,
+        HOT_POWER
+    };
+
     LRESULT Init(LPCREATESTRUCT pcs);
     LRESULT WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam);
+    void    Paint(HDC canvas);
 
-    SIZE    _logo_size;
+    void    RebuildModernContent();
+    void    BuildProgramItems();
+    void    BuildRecommendedItems();
+    void    AddFallbackProgramItems();
+    void    EnsureItemIcon(ModernStartMenuItem &item, int icon_size);
+    bool    ExecuteItem(const ModernStartMenuItem &item);
+    void    UpdatePlacement();
+    void    ApplyWindowRegion();
+    void    BeginMouseTrack();
+    void    UpdateHotState(POINT pt);
+    void    ClearHotState();
+    void    InvalidateHotArea(HOT_AREA area, int index);
+    bool    HitTest(POINT pt, HOT_AREA *area, int *index) const;
+    int     GetVisibleProgramCount() const;
+    int     GetVisibleRecommendedCount() const;
+    HFONT   CreateMenuFont(int point_size, int weight) const;
 
-    virtual void AddEntries();
-    virtual void ProcessKey(int vk);
+    RECT    GetSearchRect() const;
+    RECT    GetProgramsHeaderRect() const;
+    RECT    GetProgramsButtonRect() const;
+    RECT    GetProgramsGridRect() const;
+    RECT    GetProgramTileRect(int index) const;
+    RECT    GetRecommendedHeaderRect() const;
+    RECT    GetRecommendedButtonRect() const;
+    RECT    GetRecommendedGridRect() const;
+    RECT    GetRecommendedTileRect(int index) const;
+    RECT    GetFooterRect() const;
+    RECT    GetProfileRect() const;
+    RECT    GetPowerRect() const;
+    RECT    GetHotRect(HOT_AREA area, int index) const;
 
-    void    Paint(PaintCanvas &canvas);
+    int     _panel_width;
+    int     _panel_height;
+    int     _program_icon_size;
+    int     _recommended_icon_size;
 
+    vector<ModernStartMenuItem> _program_items;
+    vector<ModernStartMenuItem> _recommended_items;
+    StartMenuShellDirs _recent_dirs;
 
-    void    ReadLogoSize();
-    UINT    GetLogoResId();
+    bool    _show_all_programs;
+    HOT_AREA _hot_area;
+    int     _hot_index;
+    bool    _tracking_mouse;
+
+    HFONT   _title_font;
+    HFONT   _section_font;
+    HFONT   _item_font;
+    HFONT   _meta_font;
+
+    String  _user_name;
 };
 
 

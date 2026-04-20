@@ -42,6 +42,8 @@
 
 #include "../jconfig/jcfg.h"
 
+extern int JCfg_GetDesktopBarHeightWithDPI();
+
 #define SHELLPATH_CONTROL_PANEL     TEXT("::{21EC2020-3AEA-1069-A2DD-08002B30309D}")
 #define SHELLPATH_PRINTERS          TEXT("::{2227A280-3AEA-1069-A2DE-08002B30309D}")
 #define SHELLPATH_NET_CONNECTIONS   TEXT("::{7007ACC7-3202-11D1-AAD2-00805FC1270E}")
@@ -1581,96 +1583,805 @@ void StartMenuButton::DrawItem(LPDRAWITEMSTRUCT dis)
 #endif
 
 
+struct ModernStartMenuMetrics {
+    int _outer_padding;
+    int _search_height;
+    int _section_gap;
+    int _section_button_height;
+    int _section_button_width;
+    int _section_item_gap;
+    int _program_columns;
+    int _program_tile_height;
+    int _program_gap_x;
+    int _program_gap_y;
+    int _recommended_columns;
+    int _recommended_tile_height;
+    int _recommended_gap_x;
+    int _recommended_gap_y;
+    int _footer_height;
+    int _avatar_size;
+    int _power_size;
+    int _program_icon_size;
+    int _recommended_icon_size;
+    int _search_icon_size;
+    int _corner_radius;
+};
+
+static ModernStartMenuMetrics GetModernStartMenuMetrics()
+{
+    ModernStartMenuMetrics metrics = {
+        DPI_SX(30),
+        DPI_SY(40),
+        DPI_SY(24),
+        DPI_SY(30),
+        DPI_SX(76),
+        DPI_SY(16),
+        6,
+        DPI_SY(76),
+        DPI_SX(4),
+        DPI_SY(10),
+        2,
+        DPI_SY(62),
+        DPI_SX(10),
+        DPI_SY(8),
+        DPI_SY(58),
+        DPI_SX(34),
+        DPI_SX(34),
+        DPI_SX(28),
+        DPI_SX(24),
+        DPI_SX(18),
+        DPI_SX(18)
+    };
+    return metrics;
+}
+
+static HFONT CreateModernStartMenuFontHelper(int point_size, int weight)
+{
+    HDC screen_dc = GetDC(NULL);
+    int height = -MulDiv(point_size, GetDeviceCaps(screen_dc, LOGPIXELSY), 72);
+    ReleaseDC(NULL, screen_dc);
+
+    return CreateFont(height, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, TEXT("Segoe UI"));
+}
+
+static RECT MakeRect(int left, int top, int right, int bottom)
+{
+    RECT rect = { left, top, right, bottom };
+    return rect;
+}
+
+static RECT MakeRectWH(int left, int top, int width, int height)
+{
+    return MakeRect(left, top, left + width, top + height);
+}
+
+static bool IsNonEmptyRect(const RECT &rect)
+{
+    return rect.right > rect.left && rect.bottom > rect.top;
+}
+
+static void FillRoundedRectPrimitive(HDC hdc, const RECT &rect, COLORREF fill, int radius, COLORREF border = CLR_INVALID)
+{
+    HBRUSH brush = CreateSolidBrush(fill);
+    HPEN pen = border == CLR_INVALID ? CreatePen(PS_NULL, 0, 0) : CreatePen(PS_SOLID, 1, border);
+    HGDIOBJ old_brush = SelectObject(hdc, brush);
+    HGDIOBJ old_pen = SelectObject(hdc, pen);
+
+    RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, radius, radius);
+
+    SelectObject(hdc, old_pen);
+    SelectObject(hdc, old_brush);
+    DeleteObject(pen);
+    DeleteObject(brush);
+}
+
+static void DrawChevronRightPrimitive(HDC hdc, const RECT &rect, COLORREF color)
+{
+    HPEN pen = CreatePen(PS_SOLID, max(1, DPI_SX(2)), color);
+    HGDIOBJ old_pen = SelectObject(hdc, pen);
+    int center_x = (rect.left + rect.right) / 2;
+    int center_y = (rect.top + rect.bottom) / 2;
+    int size = max(2, DPI_SX(4));
+
+    MoveToEx(hdc, center_x - size, center_y - size, NULL);
+    LineTo(hdc, center_x, center_y);
+    LineTo(hdc, center_x - size, center_y + size);
+
+    SelectObject(hdc, old_pen);
+    DeleteObject(pen);
+}
+
+static String FormatRecentItemMeta(Entry *entry)
+{
+    if (!entry)
+        return TEXT("Recent item");
+
+    const FILETIME &file_time = entry->_data.ftLastWriteTime;
+    if (!file_time.dwLowDateTime && !file_time.dwHighDateTime)
+        return TEXT("Recent item");
+
+    FILETIME now_ft;
+    GetSystemTimeAsFileTime(&now_ft);
+
+    ULARGE_INTEGER now_value;
+    now_value.LowPart = now_ft.dwLowDateTime;
+    now_value.HighPart = now_ft.dwHighDateTime;
+
+    ULARGE_INTEGER item_value;
+    item_value.LowPart = file_time.dwLowDateTime;
+    item_value.HighPart = file_time.dwHighDateTime;
+
+    if (item_value.QuadPart >= now_value.QuadPart)
+        return TEXT("Just now");
+
+    ULONGLONG diff_minutes = (now_value.QuadPart - item_value.QuadPart) / (10000000ULL * 60ULL);
+    TCHAR buffer[64] = { 0 };
+
+    if (diff_minutes < 1)
+        return TEXT("Just now");
+
+    if (diff_minutes < 60) {
+        _stprintf_s(buffer, TEXT("%um ago"), (unsigned int)diff_minutes);
+        return String(buffer);
+    }
+
+    if (diff_minutes < 60 * 24) {
+        _stprintf_s(buffer, TEXT("%uh ago"), (unsigned int)(diff_minutes / 60));
+        return String(buffer);
+    }
+
+    if (diff_minutes < 60 * 24 * 7) {
+        _stprintf_s(buffer, TEXT("%ud ago"), (unsigned int)(diff_minutes / (60 * 24)));
+        return String(buffer);
+    }
+
+    FILETIME local_time;
+    SYSTEMTIME local_system_time;
+    if (FileTimeToLocalFileTime(&file_time, &local_time) && FileTimeToSystemTime(&local_time, &local_system_time) &&
+        GetDateFormat(LOCALE_USER_DEFAULT, DATE_SHORTDATE, &local_system_time, NULL, buffer, COUNTOF(buffer))) {
+        return String(buffer);
+    }
+
+    return TEXT("Recent item");
+}
+
+static Entry *GetPrimaryStartMenuEntry(const StartMenuEntry &entry)
+{
+    Entry *fallback = NULL;
+
+    for (ShellEntrySet::const_iterator it = entry._entries.begin(); it != entry._entries.end(); ++it) {
+        Entry *candidate = const_cast<Entry *>(*it);
+
+        if (!fallback)
+            fallback = candidate;
+
+        if (!(candidate->_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+            return candidate;
+    }
+
+    return fallback;
+}
+
+static bool StartMenuEntryCanLaunch(const StartMenuEntry &entry)
+{
+    for (ShellEntrySet::const_iterator it = entry._entries.begin(); it != entry._entries.end(); ++it) {
+        if (!((*it)->_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+            return true;
+    }
+
+    return false;
+}
+
+static bool ModernStartMenuHasTitle(const vector<ModernStartMenuItem> &items, LPCTSTR title)
+{
+    for (size_t index = 0; index < items.size(); ++index) {
+        if (!_tcsicmp(items[index]._title.c_str(), title))
+            return true;
+    }
+
+    return false;
+}
+
+static String GetModernStartMenuUserName()
+{
+    TCHAR user_name[256] = { 0 };
+    DWORD user_name_len = COUNTOF(user_name);
+
+    if (GetUserName(user_name, &user_name_len) && user_name[0])
+        return String(user_name);
+
+    return TEXT("User");
+}
+
+static RECT CalculateModernStartMenuRect()
+{
+    int screen_width = GetSystemMetrics(SM_CXSCREEN);
+    int screen_height = GetSystemMetrics(SM_CYSCREEN);
+    int width = min(DPI_SX(640), screen_width - DPI_SX(32));
+    int height = min(DPI_SY(690), screen_height - JCfg_GetDesktopBarHeightWithDPI() - DPI_SY(20));
+
+    if (width < DPI_SX(480))
+        width = screen_width - DPI_SX(16);
+    if (height < DPI_SY(540))
+        height = screen_height - JCfg_GetDesktopBarHeightWithDPI() - DPI_SY(10);
+
+    int x = (screen_width - width) / 2;
+    int y = screen_height - JCfg_GetDesktopBarHeightWithDPI() - height - DPI_SY(8);
+    if (y < DPI_SY(8))
+        y = DPI_SY(8);
+
+    return MakeRectWH(x, y, width, height);
+}
+
 StartMenuRoot::StartMenuRoot(HWND hwnd, const StartMenuRootCreateInfo &info)
     :  super(hwnd, info._icon_size),
-       _hwndStartButton(0)
+       _hwndStartButton(0),
+       _panel_width(0),
+       _panel_height(0),
+       _program_icon_size(GetModernStartMenuMetrics()._program_icon_size),
+       _recommended_icon_size(GetModernStartMenuMetrics()._recommended_icon_size),
+       _show_all_programs(false),
+       _hot_area(HOT_NONE),
+       _hot_index(-1),
+       _tracking_mouse(false),
+       _title_font(NULL),
+       _section_font(NULL),
+       _item_font(NULL),
+       _meta_font(NULL),
+       _user_name(GetModernStartMenuUserName())
 {
     if (!g_Globals._SHRestricted || !SHRestricted(REST_NOCOMMONGROUPS))
         try {
-            // insert directory "All Users\Start Menu"
             ShellDirectory cmn_startmenu(GetDesktopFolder(), SpecialFolderPath(CSIDL_COMMON_STARTMENU, _hwnd), _hwnd);
             _dirs.push_back(StartMenuDirectory(cmn_startmenu, (LPCTSTR)SpecialFolderFSPath(CSIDL_COMMON_PROGRAMS, _hwnd)));
         } catch (COMException &) {
-            // ignore exception and don't show additional shortcuts
         }
 
     try {
-        // insert directory "<user name>\Start Menu"
         ShellDirectory usr_startmenu(GetDesktopFolder(), SpecialFolderPath(CSIDL_STARTMENU, _hwnd), _hwnd);
         _dirs.push_back(StartMenuDirectory(usr_startmenu, (LPCTSTR)SpecialFolderFSPath(CSIDL_PROGRAMS, _hwnd)));
     } catch (COMException &) {
-        // ignore exception and don't show additional shortcuts
     }
-
-    ReadLogoSize();
 }
 
-void StartMenuRoot::ReadLogoSize()
+StartMenuRoot::~StartMenuRoot()
 {
-    // read size of logo bitmap
-    BITMAP bmp_hdr;
-    GetObject(ResBitmap(GetLogoResId()), sizeof(BITMAP), &bmp_hdr);
-    _logo_size.cx = bmp_hdr.bmWidth;
-    _logo_size.cy = bmp_hdr.bmHeight;
-
-    // cache logo width
-    _border_left = _logo_size.cx + 1;
-}
-
-
-static void CalculateStartPos(HWND hwndOwner, RECT &rect, int icon_size)
-{
-    WindowRect pos(hwndOwner);
-
-    rect.left = pos.left;
-    rect.top = pos.top - STARTMENU_LINE_HEIGHT(icon_size) - 4;
-    rect.right = pos.left + STARTMENU_WIDTH_MIN;
-    rect.bottom = pos.top;
-
-#ifndef _LIGHT_STARTMENU
-    rect.top += STARTMENU_LINE_HEIGHT(icon_size);
-#endif
+    if (_title_font)
+        DeleteObject(_title_font);
+    if (_section_font)
+        DeleteObject(_section_font);
+    if (_item_font)
+        DeleteObject(_item_font);
+    if (_meta_font)
+        DeleteObject(_meta_font);
 }
 
 HWND StartMenuRoot::Create(HWND hwndOwner, int icon_size)
 {
-    RECT rect;
-
-    CalculateStartPos(hwndOwner, rect, icon_size);
-
+    RECT rect = CalculateModernStartMenuRect();
     StartMenuRootCreateInfo create_info;
-
     create_info._icon_size = icon_size;
 
-    return Window::Create(WINDOW_CREATOR_INFO(StartMenuRoot, StartMenuRootCreateInfo), &create_info, 0, GetWndClasss(), TITLE_STARTMENU,
-                          WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN,
-                          rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, hwndOwner);
+    return Window::Create(WINDOW_CREATOR_INFO(StartMenuRoot, StartMenuRootCreateInfo), &create_info,
+        WS_EX_TOOLWINDOW, GetWndClasss(), TITLE_STARTMENU,
+        WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+        rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, hwndOwner);
 }
 
+HFONT StartMenuRoot::CreateMenuFont(int point_size, int weight) const
+{
+    return CreateModernStartMenuFontHelper(point_size, weight);
+}
+
+int StartMenuRoot::GetVisibleProgramCount() const
+{
+    int max_count = _show_all_programs ? 18 : 12;
+    return min(max_count, (int)_program_items.size());
+}
+
+int StartMenuRoot::GetVisibleRecommendedCount() const
+{
+    if (_show_all_programs)
+        return 0;
+
+    return min(6, (int)_recommended_items.size());
+}
+
+RECT StartMenuRoot::GetSearchRect() const
+{
+    ClientRect client(_hwnd);
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    return MakeRectWH(metrics._outer_padding, metrics._outer_padding,
+        client.right - metrics._outer_padding * 2, metrics._search_height);
+}
+
+RECT StartMenuRoot::GetProgramsHeaderRect() const
+{
+    ClientRect client(_hwnd);
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    RECT search_rect = GetSearchRect();
+    return MakeRectWH(metrics._outer_padding, search_rect.bottom + metrics._section_gap,
+        client.right - metrics._outer_padding * 2, metrics._section_button_height);
+}
+
+RECT StartMenuRoot::GetProgramsButtonRect() const
+{
+    RECT header_rect = GetProgramsHeaderRect();
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    return MakeRectWH(header_rect.right - metrics._section_button_width,
+        header_rect.top,
+        metrics._section_button_width,
+        metrics._section_button_height);
+}
+
+RECT StartMenuRoot::GetProgramsGridRect() const
+{
+    ClientRect client(_hwnd);
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    RECT header_rect = GetProgramsHeaderRect();
+    int rows = (GetVisibleProgramCount() + metrics._program_columns - 1) / metrics._program_columns;
+    int height = rows > 0 ? rows * metrics._program_tile_height + (rows - 1) * metrics._program_gap_y : 0;
+
+    return MakeRectWH(metrics._outer_padding,
+        header_rect.bottom + metrics._section_item_gap,
+        client.right - metrics._outer_padding * 2,
+        height);
+}
+
+RECT StartMenuRoot::GetProgramTileRect(int index) const
+{
+    RECT grid_rect = GetProgramsGridRect();
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    int tile_width = (grid_rect.right - grid_rect.left - metrics._program_gap_x * (metrics._program_columns - 1)) / metrics._program_columns;
+    int row = index / metrics._program_columns;
+    int col = index % metrics._program_columns;
+
+    return MakeRectWH(grid_rect.left + col * (tile_width + metrics._program_gap_x),
+        grid_rect.top + row * (metrics._program_tile_height + metrics._program_gap_y),
+        tile_width,
+        metrics._program_tile_height);
+}
+
+RECT StartMenuRoot::GetRecommendedHeaderRect() const
+{
+    ClientRect client(_hwnd);
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    RECT programs_grid_rect = GetProgramsGridRect();
+    return MakeRectWH(metrics._outer_padding,
+        programs_grid_rect.bottom + metrics._section_gap,
+        client.right - metrics._outer_padding * 2,
+        metrics._section_button_height);
+}
+
+RECT StartMenuRoot::GetRecommendedButtonRect() const
+{
+    RECT header_rect = GetRecommendedHeaderRect();
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    return MakeRectWH(header_rect.right - metrics._section_button_width,
+        header_rect.top,
+        metrics._section_button_width,
+        metrics._section_button_height);
+}
+
+RECT StartMenuRoot::GetRecommendedGridRect() const
+{
+    ClientRect client(_hwnd);
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    RECT header_rect = GetRecommendedHeaderRect();
+    int rows = (GetVisibleRecommendedCount() + metrics._recommended_columns - 1) / metrics._recommended_columns;
+    int height = rows > 0 ? rows * metrics._recommended_tile_height + (rows - 1) * metrics._recommended_gap_y : 0;
+
+    return MakeRectWH(metrics._outer_padding,
+        header_rect.bottom + metrics._section_item_gap,
+        client.right - metrics._outer_padding * 2,
+        height);
+}
+
+RECT StartMenuRoot::GetRecommendedTileRect(int index) const
+{
+    RECT grid_rect = GetRecommendedGridRect();
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    int tile_width = (grid_rect.right - grid_rect.left - metrics._recommended_gap_x * (metrics._recommended_columns - 1)) / metrics._recommended_columns;
+    int row = index / metrics._recommended_columns;
+    int col = index % metrics._recommended_columns;
+
+    return MakeRectWH(grid_rect.left + col * (tile_width + metrics._recommended_gap_x),
+        grid_rect.top + row * (metrics._recommended_tile_height + metrics._recommended_gap_y),
+        tile_width,
+        metrics._recommended_tile_height);
+}
+
+RECT StartMenuRoot::GetFooterRect() const
+{
+    ClientRect client(_hwnd);
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    return MakeRectWH(0, client.bottom - metrics._footer_height, client.right, metrics._footer_height);
+}
+
+RECT StartMenuRoot::GetProfileRect() const
+{
+    RECT footer_rect = GetFooterRect();
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    return MakeRectWH(metrics._outer_padding,
+        footer_rect.top,
+        footer_rect.right - metrics._outer_padding * 3 - metrics._power_size,
+        footer_rect.bottom - footer_rect.top);
+}
+
+RECT StartMenuRoot::GetPowerRect() const
+{
+    RECT footer_rect = GetFooterRect();
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    return MakeRectWH(footer_rect.right - metrics._outer_padding - metrics._power_size,
+        footer_rect.top + ((footer_rect.bottom - footer_rect.top - metrics._power_size) / 2),
+        metrics._power_size,
+        metrics._power_size);
+}
+
+void StartMenuRoot::ApplyWindowRegion()
+{
+    ClientRect client(_hwnd);
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    HRGN region = CreateRoundRectRgn(0, 0, client.right + 1, client.bottom + 1, metrics._corner_radius, metrics._corner_radius);
+    if (region)
+        SetWindowRgn(_hwnd, region, TRUE);
+}
+
+void StartMenuRoot::UpdatePlacement()
+{
+    RECT rect = CalculateModernStartMenuRect();
+    _panel_width = rect.right - rect.left;
+    _panel_height = rect.bottom - rect.top;
+
+    SetWindowPos(_hwnd, HWND_TOP, rect.left, rect.top, _panel_width, _panel_height, SWP_NOACTIVATE);
+    ApplyWindowRegion();
+}
+
+void StartMenuRoot::AddFallbackProgramItems()
+{
+    struct FallbackItem {
+        int id;
+        String title;
+        ICON_ID icon_id;
+    };
+
+    vector<FallbackItem> fallback_items;
+    fallback_items.push_back(FallbackItem{ IDC_EXPLORE, ResString(IDS_EXPLORE), ICID_EXPLORER });
+    fallback_items.push_back(FallbackItem{ IDC_SETTINGS, ResString(IDS_SETTINGS), ICID_CONFIG });
+    fallback_items.push_back(FallbackItem{ IDC_LAUNCH, ResString(IDS_LAUNCH), ICID_ACTION });
+
+    for (size_t index = 0; index < fallback_items.size() && _program_items.size() < 8; ++index) {
+        if (!ModernStartMenuHasTitle(_program_items, fallback_items[index].title.c_str())) {
+            _program_items.push_back(ModernStartMenuItem(fallback_items[index].id,
+                fallback_items[index].title.c_str(),
+                fallback_items[index].icon_id,
+                NULL,
+                true));
+        }
+    }
+}
+
+void StartMenuRoot::BuildProgramItems()
+{
+    _name_flags = NO_EXEEXT_FLAG;
+
+    for (StartMenuShellDirs::iterator it = _dirs.begin(); it != _dirs.end(); ++it) {
+        StartMenuDirectory &start_dir = *it;
+        ShellDirectory &dir = start_dir._dir;
+
+        if (!dir._scanned) {
+            WaitCursor wait;
+            dir.smart_scan(SORT_NAME, SCAN_DONT_EXTRACT_ICONS);
+        }
+
+        AddShellEntries(dir, -1, start_dir._ignore);
+    }
+
+    _name_flags = 0;
+
+    for (ShellEntryMap::const_iterator it = _entries.begin(); it != _entries.end(); ++it) {
+        if (!StartMenuEntryCanLaunch(it->second))
+            continue;
+
+        Entry *entry = GetPrimaryStartMenuEntry(it->second);
+        _program_items.push_back(ModernStartMenuItem(it->first, it->second._title, it->second._icon_id, entry, false));
+    }
+
+    AddFallbackProgramItems();
+}
+
+void StartMenuRoot::BuildRecommendedItems()
+{
+    try {
+        ShellDirectory recent_dir(GetDesktopFolder(), SpecialFolderPath(CSIDL_RECENT, _hwnd), _hwnd);
+        _recent_dirs.push_back(StartMenuDirectory(recent_dir));
+    } catch (COMException &) {
+        return;
+    }
+
+    for (StartMenuShellDirs::iterator it = _recent_dirs.begin(); it != _recent_dirs.end(); ++it) {
+        StartMenuDirectory &start_dir = *it;
+        ShellDirectory &dir = start_dir._dir;
+        int added = 0;
+
+        if (!dir._scanned) {
+            WaitCursor wait;
+            dir.smart_scan(SORT_NAME, SCAN_DONT_EXTRACT_ICONS);
+        }
+
+        dir.sort_directory(SORT_DATE);
+
+        for (Entry *entry = dir._down; entry && added < 8; entry = entry->_next) {
+            if (entry->_shell_attribs & SFGAO_HIDDEN)
+                continue;
+            if (entry->_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                continue;
+
+            int id = ++_next_id;
+            String meta_text = FormatRecentItemMeta(entry);
+            ShellEntryMap::iterator added_entry = AddEntry(entry->_display_name, (ICON_ID)entry->_icon_id, id);
+            added_entry->second._entries.insert(entry);
+            _recommended_items.push_back(ModernStartMenuItem(id, added_entry->second._title, added_entry->second._icon_id, entry, false, meta_text.c_str()));
+            ++added;
+        }
+    }
+}
+
+void StartMenuRoot::RebuildModernContent()
+{
+    _entries.clear();
+    _program_items.clear();
+    _recommended_items.clear();
+    _recent_dirs.clear();
+    _next_id = IDC_FIRST_MENU;
+
+    BuildProgramItems();
+    BuildRecommendedItems();
+}
+
+void StartMenuRoot::EnsureItemIcon(ModernStartMenuItem &item, int icon_size)
+{
+    if (item._icon_id > ICID_NONE)
+        return;
+
+    if (item._entry) {
+        if (item._entry->_icon_id == ICID_UNKNOWN)
+            item._entry->_icon_id = item._entry->safe_extract_icon(ICF_FROM_ICON_SIZE(icon_size) | ICF_NOLINKOVERLAY);
+
+        item._icon_id = (ICON_ID)item._entry->_icon_id;
+    }
+
+    if (item._icon_id <= ICID_NONE)
+        item._icon_id = item._entry ? ICID_APP : ICID_ACTION;
+}
+
+bool StartMenuRoot::ExecuteItem(const ModernStartMenuItem &item)
+{
+    if (item._is_command) {
+        Command(item._id, BN_CLICKED);
+        return true;
+    }
+
+    ShellEntryMap::const_iterator found = _entries.find(item._id);
+    if (found != _entries.end()) {
+        ActivateEntry(item._id, found->second._entries);
+        return true;
+    }
+
+    if (item._entry) {
+        CloseStartMenu(item._id);
+        item._entry->launch_entry(_hwnd);
+        return true;
+    }
+
+    return false;
+}
+
+void StartMenuRoot::BeginMouseTrack()
+{
+    if (_tracking_mouse)
+        return;
+
+    TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, _hwnd, 0 };
+    TrackMouseEvent(&tme);
+    _tracking_mouse = true;
+}
+
+void StartMenuRoot::ClearHotState()
+{
+    HOT_AREA old_area = _hot_area;
+    int old_index = _hot_index;
+
+    _hot_area = HOT_NONE;
+    _hot_index = -1;
+    InvalidateHotArea(old_area, old_index);
+}
+
+RECT StartMenuRoot::GetHotRect(HOT_AREA area, int index) const
+{
+    switch (area) {
+    case HOT_SEARCH:
+        return GetSearchRect();
+    case HOT_PROGRAMS_BUTTON:
+        return GetProgramsButtonRect();
+    case HOT_RECOMMENDED_BUTTON:
+        return GetRecommendedButtonRect();
+    case HOT_PROGRAM:
+        if (index >= 0 && index < GetVisibleProgramCount())
+            return GetProgramTileRect(index);
+        break;
+    case HOT_RECOMMENDED:
+        if (index >= 0 && index < GetVisibleRecommendedCount())
+            return GetRecommendedTileRect(index);
+        break;
+    case HOT_PROFILE:
+        return GetProfileRect();
+    case HOT_POWER:
+        return GetPowerRect();
+    default:
+        break;
+    }
+
+    return MakeRect(0, 0, 0, 0);
+}
+
+void StartMenuRoot::InvalidateHotArea(HOT_AREA area, int index)
+{
+    RECT rect = GetHotRect(area, index);
+    if (!IsNonEmptyRect(rect))
+        return;
+
+    InflateRect(&rect, DPI_SX(3), DPI_SY(3));
+    InvalidateRect(_hwnd, &rect, FALSE);
+}
+
+bool StartMenuRoot::HitTest(POINT pt, HOT_AREA *area, int *index) const
+{
+    if (area)
+        *area = HOT_NONE;
+    if (index)
+        *index = -1;
+
+    RECT rect = GetPowerRect();
+    if (PtInRect(&rect, pt)) {
+        if (area) *area = HOT_POWER;
+        return true;
+    }
+
+    rect = GetProfileRect();
+    if (PtInRect(&rect, pt)) {
+        if (area) *area = HOT_PROFILE;
+        return true;
+    }
+
+    rect = GetProgramsButtonRect();
+    if (PtInRect(&rect, pt)) {
+        if (area) *area = HOT_PROGRAMS_BUTTON;
+        return true;
+    }
+
+    if (!_show_all_programs) {
+        rect = GetRecommendedButtonRect();
+        if (PtInRect(&rect, pt)) {
+            if (area) *area = HOT_RECOMMENDED_BUTTON;
+            return true;
+        }
+    }
+
+    for (int item_index = 0; item_index < GetVisibleProgramCount(); ++item_index) {
+        rect = GetProgramTileRect(item_index);
+        if (PtInRect(&rect, pt)) {
+            if (area) *area = HOT_PROGRAM;
+            if (index) *index = item_index;
+            return true;
+        }
+    }
+
+    for (int item_index = 0; item_index < GetVisibleRecommendedCount(); ++item_index) {
+        rect = GetRecommendedTileRect(item_index);
+        if (PtInRect(&rect, pt)) {
+            if (area) *area = HOT_RECOMMENDED;
+            if (index) *index = item_index;
+            return true;
+        }
+    }
+
+    rect = GetSearchRect();
+    if (PtInRect(&rect, pt)) {
+        if (area) *area = HOT_SEARCH;
+        return true;
+    }
+
+    return false;
+}
+
+void StartMenuRoot::UpdateHotState(POINT pt)
+{
+    HOT_AREA hot_area = HOT_NONE;
+    int hot_index = -1;
+
+    HitTest(pt, &hot_area, &hot_index);
+
+    if (hot_area != _hot_area || hot_index != _hot_index) {
+        HOT_AREA old_area = _hot_area;
+        int old_index = _hot_index;
+        _hot_area = hot_area;
+        _hot_index = hot_index;
+        InvalidateHotArea(old_area, old_index);
+        InvalidateHotArea(_hot_area, _hot_index);
+    }
+}
+
+int StartMenuRoot::Command(int id, int code)
+{
+    switch (id) {
+    case IDC_PROGRAMS:
+        _show_all_programs = !_show_all_programs;
+        _hot_area = HOT_NONE;
+        _hot_index = -1;
+        InvalidateRect(_hwnd, NULL, FALSE);
+        return 0;
+
+    case IDC_RECENT:
+        CloseStartMenu(id);
+        try {
+            launch_file(_hwnd, SpecialFolderFSPath(CSIDL_RECENT, _hwnd));
+        } catch (COMException &) {
+        }
+        return 0;
+
+    case IDC_SETTINGS:
+        CloseStartMenu(id);
+        if (!launch_file(_hwnd, TEXT("ms-settings:")))
+            return super::Command(IDC_CONTROL_PANEL, code);
+        return 0;
+
+    case IDC_SEARCH:
+        CloseStartMenu(id);
+        ShowSearchDialog();
+        return 0;
+
+    default: {
+        ShellEntryMap::const_iterator found = _entries.find(id);
+
+        if (found != _entries.end()) {
+            ActivateEntry(id, found->second._entries);
+            return 0;
+        }
+
+        return super::Command(id, code);
+    }
+    }
+}
+
+LRESULT StartMenuRoot::Init(LPCREATESTRUCT pcs)
+{
+    _title_font = CreateMenuFont(20, FW_SEMIBOLD);
+    _section_font = CreateMenuFont(11, FW_SEMIBOLD);
+    _item_font = CreateMenuFont(9, FW_NORMAL);
+    _meta_font = CreateMenuFont(8, FW_NORMAL);
+
+    RebuildModernContent();
+    UpdatePlacement();
+    return 0;
+}
 
 void StartMenuRoot::TrackStartmenu()
 {
     MSG msg;
     HWND hwnd = _hwnd;
 
-#ifdef _LIGHT_STARTMENU
-    _selected_id = -1;
-#endif
+    _show_all_programs = false;
+    ClearHotState();
+    RebuildModernContent();
+    UpdatePlacement();
 
-#ifdef _LIGHT_STARTMENU
-    // recalculate start menu root position
-    RECT rect;
-
-    CalculateStartPos(_hwndStartButton, rect, _icon_size);
-
-    SetWindowPos(hwnd, 0, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, 0);
-
-    ResizeToButtons();
-#endif
-
-    // show previously hidden start menu
     ShowWindow(hwnd, SW_SHOW);
     SetForegroundWindow(hwnd);
+    SetActiveWindow(hwnd);
+    SetFocus(hwnd);
 
     while (IsWindow(hwnd) && IsWindowVisible(hwnd)) {
         if (!GetMessage(&msg, 0, 0, 0)) {
@@ -1678,12 +2389,11 @@ void StartMenuRoot::TrackStartmenu()
             break;
         }
 
-        // Check for a mouse click on any window, that is not part of the start menu
         if (msg.message == WM_LBUTTONDOWN || msg.message == WM_MBUTTONDOWN || msg.message == WM_RBUTTONDOWN) {
             StartMenu *menu_wnd = NULL;
 
-            for (HWND hwnd = msg.hwnd; hwnd; hwnd = GetParent(hwnd)) {
-                menu_wnd = WINDOW_DYNAMIC_CAST(StartMenu, hwnd);
+            for (HWND menu_hwnd = msg.hwnd; menu_hwnd; menu_hwnd = GetParent(menu_hwnd)) {
+                menu_wnd = WINDOW_DYNAMIC_CAST(StartMenu, menu_hwnd);
 
                 if (menu_wnd)
                     break;
@@ -1715,183 +2425,388 @@ void StartMenuRoot::TrackStartmenu()
     }
 }
 
-int StartMenuRoot::Command(int id, int code)
-{
-    return super::Command(id, code);
-}
-
-LRESULT StartMenuRoot::Init(LPCREATESTRUCT pcs)
-{
-    if (!JCFG2_DEF("JS_STARTMENU", "notopitems", false).ToBool()) {
-        // add buttons for entries in _entries
-
-        _name_flags = NO_EXEEXT_FLAG; // hide .exe extension
-        if (super::Init(pcs))
-            return 1;
-
-        _name_flags = 0;
-
-        AddSeparator();
-    }
-
-    // insert hard coded start entries
-    if (!JCFG2_DEF("JS_STARTMENU", "noprograms", false).ToBool())
-        AddButton(ResString(IDS_PROGRAMS),      ICID_APPS, true, IDC_PROGRAMS);
-
-    //AddButton(ResString(IDS_DOCUMENTS),     ICID_DOCUMENTS, true, IDC_DOCUMENTS);
-
-    //if (!g_Globals._SHRestricted || !SHRestricted(REST_NORECENTDOCSMENU))
-    //    AddButton(ResString(IDS_RECENT),    ICID_RECENT, true, IDC_RECENT);
-
-    //AddButton(ResString(IDS_FAVORITES),     ICID_FAVORITES, true, IDC_FAVORITES);
-
-    if (!JCFG2_DEF("JS_STARTMENU", "nosettings", true).ToBool())
-        AddButton(ResString(IDS_SETTINGS),      ICID_CONFIG, true, IDC_SETTINGS);
-
-    if (!JCFG2_DEF("JS_STARTMENU", "nobrowse", false).ToBool())
-        AddButton(ResString(IDS_BROWSE),        ICID_FOLDER, true, IDC_BROWSE);
-
-    if (!JCFG2_DEF("JS_STARTMENU", "noconnections", false).ToBool()) {
-        TCHAR sysPathBuff[MAX_PATH] = { 0 };
-        GetWindowsDirectory(sysPathBuff, MAX_PATH);
-        String sPath = sysPathBuff;
-        sPath.append(_T("\\System32\\netshell.dll")); // NetSetupApi.dll
-        if (PathFileExists(sPath)) {
-            AddButton(ResString(IDS_CONNECTIONS), ICID_NETCONNS, true, IDC_CONNECTIONS_FOLDER);
-        }
-    }
-
-    //if (!g_Globals._SHRestricted || !SHRestricted(REST_NOFIND))
-    if (!JCFG2_DEF("JS_STARTMENU", "nofind", true).ToBool())
-        AddButton(ResString(IDS_SEARCH),    ICID_SEARCH, true, IDC_SEARCH);
-
-    //AddButton(ResString(IDS_START_HELP),    ICID_INFO, false, IDC_START_HELP);
-
-    //if (!g_Globals._SHRestricted || !SHRestricted(REST_NORUN))
-    if (!JCFG2_DEF("JS_STARTMENU", "norun", false).ToBool())
-        AddButton(ResString(IDS_LAUNCH),    ICID_ACTION, false, IDC_LAUNCH);
-
-    AddSeparator();
-
-    //if (!g_Globals._SHRestricted || SHRestricted(REST_STARTMENULOGOFF) != 1)
-    if (!JCFG2_DEF("JS_STARTMENU", "nologoff", true).ToBool())
-        AddButton(ResString(IDS_LOGOFF),    ICID_LOGOFF, false, IDC_LOGOFF);
-
-    if (!JCFG2_DEF("JS_STARTMENU", "norestart", false).ToBool())
-        AddButton(ResString(IDS_RESTART), ICID_RESTART, false, IDC_RESTART);
-
-    //if (!g_Globals._SHRestricted || !SHRestricted(REST_NOCLOSE))
-    if (!JCFG2_DEF("JS_STARTMENU", "noshutdown", false).ToBool())
-        AddButton(ResString(IDS_SHUTDOWN),  ICID_SHUTDOWN, false, IDC_SHUTDOWN);
-
-    if (!JCFG2_DEF("JS_STARTMENU", "noterm", true).ToBool())
-        AddButton(ResString(IDS_TERMINATE), ICID_TERMINATE, false, IDC_TERMINATE);
-
-#ifdef _LIGHT_STARTMENU
-    // set the window size to fit all buttons
-    ResizeToButtons();
-#endif
-
-    return 0;
-}
-
-
-void StartMenuRoot::AddEntries()
-{
-    super::AddEntries();
-    if (!JCFG2_DEF("JS_STARTMENU", "nofileexplorer", true).ToBool()) {
-        AddButton(ResString(IDS_EXPLORE), ICID_EXPLORER, false, IDC_EXPLORE);
-    }
-}
-
-
 LRESULT StartMenuRoot::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
 {
     switch (nmsg) {
+    case WM_ERASEBKGND:
+        return 1;
+
     case WM_PAINT: {
-        PaintCanvas canvas(_hwnd);
+        BufferedPaintCanvas canvas(_hwnd);
         Paint(canvas);
-        break;
+        return 0;
     }
+
+    case WM_SIZE:
+        _panel_width = LOWORD(lparam);
+        _panel_height = HIWORD(lparam);
+        ApplyWindowRegion();
+        return 0;
 
     case WM_DISPLAYCHANGE:
-        // re-evaluate logo size using the correct color depth
-        ReadLogoSize();
-        break;
+        UpdatePlacement();
+        return 0;
 
-    default:
-        return super::WndProc(nmsg, wparam, lparam);
+    case WM_MOUSEMOVE:
+        BeginMouseTrack();
+        UpdateHotState(Point(lparam));
+        return 0;
+
+    case WM_MOUSELEAVE:
+        _tracking_mouse = false;
+        ClearHotState();
+        return 0;
+
+    case WM_LBUTTONDOWN:
+        SetFocus(_hwnd);
+        return 0;
+
+    case WM_LBUTTONUP: {
+        HOT_AREA hot_area = HOT_NONE;
+        int hot_index = -1;
+        HitTest(Point(lparam), &hot_area, &hot_index);
+
+        switch (hot_area) {
+        case HOT_SEARCH:
+            Command(IDC_SEARCH, BN_CLICKED);
+            break;
+
+        case HOT_PROGRAMS_BUTTON:
+            Command(IDC_PROGRAMS, BN_CLICKED);
+            break;
+
+        case HOT_RECOMMENDED_BUTTON:
+            Command(IDC_RECENT, BN_CLICKED);
+            break;
+
+        case HOT_PROGRAM:
+            if (hot_index >= 0 && hot_index < (int)_program_items.size())
+                ExecuteItem(_program_items[hot_index]);
+            break;
+
+        case HOT_RECOMMENDED:
+            if (hot_index >= 0 && hot_index < (int)_recommended_items.size())
+                ExecuteItem(_recommended_items[hot_index]);
+            break;
+
+        case HOT_PROFILE:
+            CloseStartMenu();
+            try {
+                launch_file(_hwnd, SpecialFolderFSPath(CSIDL_PERSONAL, _hwnd));
+            } catch (COMException &) {
+            }
+            break;
+
+        case HOT_POWER:
+            Command(IDC_SHUTDOWN, BN_CLICKED);
+            break;
+
+        default:
+            break;
+        }
+        return 0;
     }
 
-    return 0;
-}
-
-void StartMenuRoot::Paint(PaintCanvas &canvas)
-{
-    MemCanvas mem_dc;
-    ResBitmap bmp(GetLogoResId());
-    BitmapSelection sel(mem_dc, bmp);
-
-    ClientRect clnt(_hwnd);
-    int h = min(_logo_size.cy, clnt.bottom);
-
-    RECT rect = {0, 0, _logo_size.cx, clnt.bottom - h};
-    HBRUSH hbr = CreateSolidBrush(GetPixel(mem_dc, 0, 0));
-    FillRect(canvas, &rect, hbr);
-    DeleteObject(hbr);
-
-    PatBlt(canvas, _logo_size.cx, 0, 1, clnt.bottom, WHITENESS);
-
-    BitBlt(canvas, 0, clnt.bottom - h, _logo_size.cx, h, mem_dc, 0, (h < _logo_size.cy ? _logo_size.cy - h : 0) , SRCCOPY);
-
-    super::Paint(canvas);
-}
-
-UINT StartMenuRoot::GetLogoResId()
-{
-    WindowCanvas dc(_hwnd);
-
-    int clr_bits = GetDeviceCaps(dc, BITSPIXEL);
-
-    if (clr_bits > 8) {
-        if (g_Globals._lua) {
-            int logo_id = g_Globals._lua->call("StartMenu:SetLogoId", 1);
-            if (logo_id == -1) logo_id = 1;
-            return IDB_LOGOV + logo_id;
+    case WM_KEYDOWN:
+        if (wparam == VK_ESCAPE) {
+            CloseStartMenu();
+            return 0;
         }
-        return IDB_LOGOV + 1;
-    } else if (clr_bits > 4)
-        return IDB_LOGOV256;
-    else
-        return IDB_LOGOV16;
+        if (wparam == VK_RETURN) {
+            switch (_hot_area) {
+            case HOT_SEARCH:
+                Command(IDC_SEARCH, BN_CLICKED);
+                return 0;
+            case HOT_PROGRAMS_BUTTON:
+                Command(IDC_PROGRAMS, BN_CLICKED);
+                return 0;
+            case HOT_RECOMMENDED_BUTTON:
+                Command(IDC_RECENT, BN_CLICKED);
+                return 0;
+            case HOT_PROGRAM:
+                if (_hot_index >= 0 && _hot_index < (int)_program_items.size())
+                    ExecuteItem(_program_items[_hot_index]);
+                return 0;
+            case HOT_RECOMMENDED:
+                if (_hot_index >= 0 && _hot_index < (int)_recommended_items.size())
+                    ExecuteItem(_recommended_items[_hot_index]);
+                return 0;
+            case HOT_POWER:
+                Command(IDC_SHUTDOWN, BN_CLICKED);
+                return 0;
+            default:
+                break;
+            }
+        }
+        return 0;
+
+    case WM_ACTIVATEAPP:
+        if (!wparam)
+            CloseStartMenu();
+        return 0;
+
+    case WM_CANCELMODE:
+        return 0;
+
+    case WM_NCHITTEST:
+        return HTCLIENT;
+    }
+
+    return DefWindowProc(_hwnd, nmsg, wparam, lparam);
 }
 
+void StartMenuRoot::Paint(HDC canvas)
+{
+    ClientRect client(_hwnd);
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    RECT client_rect = MakeRect(0, 0, client.right, client.bottom);
+    COLORREF panel_color = RGB(36, 39, 43);
+    COLORREF border_color = RGB(82, 86, 91);
+    COLORREF section_text = RGB(244, 246, 248);
+    COLORREF item_text = RGB(238, 241, 244);
+    COLORREF meta_text = RGB(173, 177, 182);
+    COLORREF search_fill = _hot_area == HOT_SEARCH ? RGB(55, 59, 65) : RGB(45, 48, 53);
+    COLORREF search_border = _hot_area == HOT_SEARCH ? RGB(108, 133, 168) : RGB(90, 95, 101);
+    COLORREF action_fill = RGB(78, 82, 88);
+    COLORREF action_hover_fill = RGB(94, 98, 104);
+    COLORREF action_border = RGB(98, 102, 108);
+    COLORREF program_hover_fill = RGB(64, 68, 74);
+    COLORREF recommended_fill = RGB(44, 47, 52);
+    COLORREF recommended_border = RGB(57, 61, 66);
+    COLORREF recommended_hover_fill = RGB(61, 65, 71);
+    COLORREF footer_fill = RGB(43, 46, 50);
+    COLORREF footer_border = RGB(82, 86, 91);
+    COLORREF profile_hover_fill = RGB(60, 64, 69);
+    COLORREF power_fill = _hot_area == HOT_POWER ? RGB(86, 90, 96) : RGB(63, 67, 72);
+    COLORREF power_border = _hot_area == HOT_POWER ? RGB(109, 113, 119) : RGB(84, 88, 94);
+
+    FillRoundedRectPrimitive(canvas, client_rect, panel_color, metrics._corner_radius, border_color);
+
+    RECT search_rect = GetSearchRect();
+    FillRoundedRectPrimitive(canvas, search_rect, search_fill, DPI_SX(20), search_border);
+
+    HBRUSH search_brush = CreateSolidBrush(search_fill);
+    g_Globals._icon_cache.get_icon(ICID_SEARCH).draw(canvas,
+        search_rect.left + DPI_SX(14),
+        search_rect.top + ((search_rect.bottom - search_rect.top - metrics._search_icon_size) / 2),
+        metrics._search_icon_size,
+        metrics._search_icon_size,
+        search_fill,
+        search_brush);
+    DeleteObject(search_brush);
+
+    HFONT old_font = (HFONT)SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+    int old_bk_mode = SetBkMode(canvas, TRANSPARENT);
+    COLORREF old_text_color = SetTextColor(canvas, RGB(171, 176, 182));
+    RECT search_text_rect = search_rect;
+    search_text_rect.left += DPI_SX(42);
+    DrawText(canvas, TEXT("Search for apps, settings, and documents"), -1, &search_text_rect,
+        DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+    RECT programs_header_rect = GetProgramsHeaderRect();
+    SelectObject(canvas, _section_font ? _section_font : g_Globals._hDefaultFont);
+    SetTextColor(canvas, section_text);
+    DrawText(canvas, _show_all_programs ? TEXT("All Apps") : TEXT("Pinned"), -1, &programs_header_rect,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    RECT programs_button_rect = GetProgramsButtonRect();
+    FillRoundedRectPrimitive(canvas, programs_button_rect,
+        _hot_area == HOT_PROGRAMS_BUTTON ? action_hover_fill : action_fill,
+        DPI_SX(12), action_border);
+    RECT programs_button_text_rect = programs_button_rect;
+    programs_button_text_rect.left += DPI_SX(12);
+    programs_button_text_rect.right -= DPI_SX(18);
+    SetTextColor(canvas, RGB(236, 239, 242));
+    DrawText(canvas, _show_all_programs ? TEXT("Pinned") : TEXT("All"), -1, &programs_button_text_rect,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    DrawChevronRightPrimitive(canvas,
+        MakeRectWH(programs_button_rect.right - DPI_SX(16), programs_button_rect.top, DPI_SX(10), programs_button_rect.bottom - programs_button_rect.top),
+        RGB(236, 239, 242));
+
+    for (int index = 0; index < GetVisibleProgramCount(); ++index) {
+        RECT item_rect = GetProgramTileRect(index);
+        ModernStartMenuItem &item = _program_items[index];
+        EnsureItemIcon(item, _program_icon_size);
+
+        bool is_hot = _hot_area == HOT_PROGRAM && _hot_index == index;
+        COLORREF tile_color = is_hot ? program_hover_fill : panel_color;
+        if (is_hot)
+            FillRoundedRectPrimitive(canvas, item_rect, tile_color, DPI_SX(14));
+
+        HBRUSH tile_brush = CreateSolidBrush(tile_color);
+        int icon_left = item_rect.left + ((item_rect.right - item_rect.left - _program_icon_size) / 2);
+        int icon_top = item_rect.top + DPI_SY(8);
+        g_Globals._icon_cache.get_icon(item._icon_id).draw(canvas, icon_left, icon_top,
+            _program_icon_size, _program_icon_size, tile_color, tile_brush);
+        DeleteObject(tile_brush);
+
+        RECT text_rect = item_rect;
+        text_rect.top = icon_top + _program_icon_size + DPI_SY(8);
+        text_rect.left += DPI_SX(6);
+        text_rect.right -= DPI_SX(6);
+        text_rect.bottom -= DPI_SY(8);
+        SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+        SetTextColor(canvas, item_text);
+        DrawText(canvas, item._title.c_str(), -1, &text_rect,
+            DT_CENTER | DT_TOP | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+    }
+
+    if (GetVisibleProgramCount() == 0) {
+        RECT empty_rect = GetProgramsGridRect();
+        SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+        SetTextColor(canvas, meta_text);
+        DrawText(canvas, TEXT("No applications found."), -1, &empty_rect,
+            DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+    }
+
+    if (!_show_all_programs) {
+        RECT recommended_header_rect = GetRecommendedHeaderRect();
+        SelectObject(canvas, _section_font ? _section_font : g_Globals._hDefaultFont);
+        SetTextColor(canvas, section_text);
+        DrawText(canvas, TEXT("Recommended"), -1, &recommended_header_rect,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        RECT recommended_button_rect = GetRecommendedButtonRect();
+        FillRoundedRectPrimitive(canvas, recommended_button_rect,
+            _hot_area == HOT_RECOMMENDED_BUTTON ? action_hover_fill : action_fill,
+            DPI_SX(12), action_border);
+        RECT recommended_button_text_rect = recommended_button_rect;
+        recommended_button_text_rect.left += DPI_SX(12);
+        recommended_button_text_rect.right -= DPI_SX(18);
+        SetTextColor(canvas, RGB(236, 239, 242));
+        DrawText(canvas, TEXT("More"), -1, &recommended_button_text_rect,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        DrawChevronRightPrimitive(canvas,
+            MakeRectWH(recommended_button_rect.right - DPI_SX(16), recommended_button_rect.top, DPI_SX(10), recommended_button_rect.bottom - recommended_button_rect.top),
+            RGB(236, 239, 242));
+
+        for (int index = 0; index < GetVisibleRecommendedCount(); ++index) {
+            RECT item_rect = GetRecommendedTileRect(index);
+            ModernStartMenuItem &item = _recommended_items[index];
+            EnsureItemIcon(item, _recommended_icon_size);
+
+            COLORREF tile_color = (_hot_area == HOT_RECOMMENDED && _hot_index == index) ? recommended_hover_fill : recommended_fill;
+            FillRoundedRectPrimitive(canvas, item_rect, tile_color, DPI_SX(12), recommended_border);
+
+            HBRUSH tile_brush = CreateSolidBrush(tile_color);
+            int icon_left = item_rect.left + DPI_SX(14);
+            int icon_top = item_rect.top + ((item_rect.bottom - item_rect.top - _recommended_icon_size) / 2);
+            g_Globals._icon_cache.get_icon(item._icon_id).draw(canvas, icon_left, icon_top,
+                _recommended_icon_size, _recommended_icon_size, tile_color, tile_brush);
+            DeleteObject(tile_brush);
+
+            RECT title_rect = item_rect;
+            title_rect.left += DPI_SX(44);
+            title_rect.top += DPI_SY(9);
+            title_rect.right -= DPI_SX(10);
+            title_rect.bottom = title_rect.top + DPI_SY(18);
+            SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, item_text);
+            DrawText(canvas, item._title.c_str(), -1, &title_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+            RECT meta_rect = item_rect;
+            meta_rect.left += DPI_SX(44);
+            meta_rect.top += DPI_SY(30);
+            meta_rect.right -= DPI_SX(10);
+            SelectObject(canvas, _meta_font ? _meta_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, meta_text);
+            DrawText(canvas, item._meta_text.empty() ? TEXT("Recent item") : item._meta_text.c_str(), -1, &meta_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        }
+
+        if (GetVisibleRecommendedCount() == 0) {
+            RECT empty_rect = GetRecommendedGridRect();
+            SelectObject(canvas, _meta_font ? _meta_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, meta_text);
+            DrawText(canvas, TEXT("No recent items yet."), -1, &empty_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+        }
+    }
+
+    RECT footer_rect = GetFooterRect();
+    HBRUSH footer_brush = CreateSolidBrush(footer_fill);
+    FillRect(canvas, &footer_rect, footer_brush);
+    DeleteObject(footer_brush);
+    HBRUSH separator_brush = CreateSolidBrush(footer_border);
+    RECT separator_rect = MakeRect(footer_rect.left, footer_rect.top, footer_rect.right, footer_rect.top + 1);
+    FillRect(canvas, &separator_rect, separator_brush);
+    DeleteObject(separator_brush);
+
+    RECT profile_rect = GetProfileRect();
+    RECT profile_chip_rect = profile_rect;
+    profile_chip_rect.top += DPI_SY(6);
+    profile_chip_rect.bottom -= DPI_SY(6);
+    profile_chip_rect.right = min(profile_chip_rect.right, profile_chip_rect.left + DPI_SX(228));
+    if (_hot_area == HOT_PROFILE)
+        FillRoundedRectPrimitive(canvas, profile_chip_rect, profile_hover_fill, DPI_SX(12));
+
+    RECT avatar_rect = MakeRectWH(profile_rect.left,
+        footer_rect.top + ((footer_rect.bottom - footer_rect.top - metrics._avatar_size) / 2),
+        metrics._avatar_size,
+        metrics._avatar_size);
+    HBRUSH avatar_brush = CreateSolidBrush(RGB(86, 112, 170));
+    HPEN avatar_pen = CreatePen(PS_NULL, 0, 0);
+    HGDIOBJ old_brush = SelectObject(canvas, avatar_brush);
+    HGDIOBJ old_pen = SelectObject(canvas, avatar_pen);
+    Ellipse(canvas, avatar_rect.left, avatar_rect.top, avatar_rect.right, avatar_rect.bottom);
+    SelectObject(canvas, old_pen);
+    SelectObject(canvas, old_brush);
+    DeleteObject(avatar_pen);
+    DeleteObject(avatar_brush);
+
+    String initials;
+    if (!_user_name.empty()) {
+        initials += _user_name.at(0);
+        size_t split_pos = _user_name.find(TEXT(' '));
+        if (split_pos != String::npos && split_pos + 1 < _user_name.length())
+            initials += _user_name.at(split_pos + 1);
+    } else {
+        initials = TEXT("U");
+    }
+
+    RECT avatar_text_rect = avatar_rect;
+    SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+    SetTextColor(canvas, RGB(255, 255, 255));
+    DrawText(canvas, initials.c_str(), -1, &avatar_text_rect,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    RECT user_text_rect = profile_rect;
+    user_text_rect.left = avatar_rect.right + DPI_SX(12);
+    SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+    SetTextColor(canvas, item_text);
+    DrawText(canvas, _user_name.c_str(), -1, &user_text_rect,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+    RECT power_rect = GetPowerRect();
+    FillRoundedRectPrimitive(canvas, power_rect, power_fill, DPI_SX(12), power_border);
+    HBRUSH power_brush = CreateSolidBrush(power_fill);
+    g_Globals._icon_cache.get_icon(ICID_SHUTDOWN).draw(canvas,
+        power_rect.left + ((power_rect.right - power_rect.left - metrics._recommended_icon_size) / 2),
+        power_rect.top + ((power_rect.bottom - power_rect.top - metrics._recommended_icon_size) / 2),
+        metrics._recommended_icon_size,
+        metrics._recommended_icon_size,
+        power_fill,
+        power_brush);
+    DeleteObject(power_brush);
+
+    SetTextColor(canvas, old_text_color);
+    SetBkMode(canvas, old_bk_mode);
+    SelectObject(canvas, old_font);
+}
 
 void StartMenuRoot::CloseStartMenu(int id)
 {
-    if (_submenu)
-        CloseSubmenus();
+    _tracking_mouse = false;
+    ClearHotState();
 
-    if (IsStartMenuVisible()) ShowWindow(_hwnd, SW_HIDE);
+    if (IsStartMenuVisible())
+        ShowWindow(_hwnd, SW_HIDE);
 }
 
 bool StartMenuRoot::IsStartMenuVisible() const
 {
     return IsWindowVisible(_hwnd) != FALSE;
-}
-
-void StartMenuRoot::ProcessKey(int vk)
-{
-    switch (vk) {
-    case VK_LEFT:
-        if (_submenu)
-            CloseOtherSubmenus();
-        // don't close start menu root
-        break;
-
-    default:
-        super::ProcessKey(vk);
-    }
 }
 
 
