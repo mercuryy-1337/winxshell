@@ -56,6 +56,12 @@ struct TaskbarGroupStateQuery {
     int     _window_capacity;
 };
 
+enum TaskbarLaunchKind {
+    TASKBAR_LAUNCH_NONE = 0,
+    TASKBAR_LAUNCH_SHORTCUT,
+    TASKBAR_LAUNCH_EXPLORER,
+};
+
 
 /// internal task bar button management entry
 struct TaskBarEntry {
@@ -74,6 +80,9 @@ struct TaskBarEntry {
     int     _window_group_count;
     HWND    _primary_hwnd;
     String  _app_key;
+    String  _pin_title;
+    String  _launch_path;
+    TaskbarLaunchKind _launch_kind;
     bool    _pinned;
     vector<HWND> _windows;
 };
@@ -112,6 +121,7 @@ protected:
     bool        _animation_timer_running;
     int         _preferred_btn_width;
     set<String> _pinned_app_keys;
+    vector<String> _visible_order;
     const UINT WM_SHELLHOOK;
 
     void InitTaskbarStyle();
@@ -126,6 +136,9 @@ protected:
     static BOOL CALLBACK EnumWndProc(HWND hwnd, LPARAM lparam);
 
     void    ApplyBackgroundStyle();
+    void    LoadPinnedEntries();
+    void    LaunchEntry(TaskBarMap::iterator it);
+    HBITMAP CreateEntryBitmap(const TaskBarEntry &entry);
     void    Refresh();
     void    ResizeButtons();
     int     GetPreferredWidth() const;

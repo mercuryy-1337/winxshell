@@ -39,6 +39,15 @@ inline String MakeAppIdKey(LPCTSTR app_id)
     return key;
 }
 
+inline bool PathMatchesFileName(LPCTSTR path, LPCTSTR file_name)
+{
+    if (!path || !*path || !file_name || !*file_name)
+        return false;
+
+    LPCTSTR base_name = PathFindFileName(path);
+    return base_name && !_tcsicmp(base_name, file_name);
+}
+
 inline String ReadAppIdFromPropertyStore(IPropertyStore *store)
 {
     if (!store)
@@ -54,6 +63,43 @@ inline String ReadAppIdFromPropertyStore(IPropertyStore *store)
 
     PropVariantClear(&value);
     return result;
+}
+
+inline bool IsExplorerProcessPath(LPCTSTR path)
+{
+    if (!path || !*path)
+        return false;
+
+    TCHAR windows_dir[MAX_PATH] = { 0 };
+    GetWindowsDirectory(windows_dir, COUNTOF(windows_dir));
+
+    String explorer_path = windows_dir;
+    explorer_path += TEXT("\\explorer.exe");
+    return !_tcsicmp(explorer_path.c_str(), path);
+}
+
+inline bool IsHostedProcessPath(LPCTSTR path)
+{
+    return PathMatchesFileName(path, TEXT("ApplicationFrameHost.exe")) ||
+        PathMatchesFileName(path, TEXT("WWAHost.exe")) ||
+        PathMatchesFileName(path, TEXT("ShellExperienceHost.exe")) ||
+        PathMatchesFileName(path, TEXT("StartMenuExperienceHost.exe")) ||
+        PathMatchesFileName(path, TEXT("SearchHost.exe"));
+}
+
+inline String ReadShortcutAppId(LPCTSTR path)
+{
+    if (!path || !*path)
+        return String();
+
+    IPropertyStore *store = NULL;
+    HRESULT hr = SHGetPropertyStoreFromParsingName(path, NULL, GPS_DEFAULT, IID_PPV_ARGS(&store));
+    if (FAILED(hr) || !store)
+        return String();
+
+    String app_id = ReadAppIdFromPropertyStore(store);
+    store->Release();
+    return app_id;
 }
 
 inline bool GetWindowProcessPath(HWND hwnd, TCHAR *path, size_t path_count)
@@ -82,21 +128,33 @@ inline bool GetWindowProcessPath(HWND hwnd, TCHAR *path, size_t path_count)
 
 inline String GetWindowAppKey(HWND hwnd)
 {
-    // Prefer process path — this matches how shortcuts resolve their targets
-    // and avoids UMID-vs-path mismatches that cause pinned/running desync.
     TCHAR process_path[MAX_PATH] = { 0 };
-    if (GetWindowProcessPath(hwnd, process_path, COUNTOF(process_path)))
-        return MakePathKey(process_path);
+    bool has_process_path = GetWindowProcessPath(hwnd, process_path, COUNTOF(process_path));
 
-    // Fallback: try AppUserModelID for processes we can't open (elevated)
+    String app_id;
     IPropertyStore *store = NULL;
     HRESULT hr = SHGetPropertyStoreForWindow(hwnd, IID_PPV_ARGS(&store));
     if (SUCCEEDED(hr) && store) {
-        String app_id = ReadAppIdFromPropertyStore(store);
+        app_id = ReadAppIdFromPropertyStore(store);
         store->Release();
-        if (!app_id.empty())
-            return app_id;
     }
+
+    if (has_process_path) {
+        if (IsExplorerProcessPath(process_path)) {
+            if (!app_id.empty())
+                return app_id;
+
+            return MakePathKey(process_path);
+        }
+
+        if (!app_id.empty() && IsHostedProcessPath(process_path))
+            return app_id;
+
+        return MakePathKey(process_path);
+    }
+
+    if (!app_id.empty())
+        return app_id;
 
     // Last resort: class name
     TCHAR class_name[128] = { 0 };
@@ -124,13 +182,21 @@ inline String GetShortcutAppKey(LPCTSTR path)
     if (!path || !*path)
         return String();
 
-    // Always resolve to target exe path — matches GetWindowAppKey's
-    // path-first approach so pinned and running keys are consistent.
     if (PathMatchSpec(path, TEXT("*.lnk"))) {
+        String app_id = ReadShortcutAppId(path);
+
         TCHAR target_path[MAX_PATH] = { 0 };
         GetShortcutPath(path, target_path, COUNTOF(target_path));
-        if (target_path[0])
+
+        if (target_path[0]) {
+            if (!app_id.empty() && (IsExplorerProcessPath(target_path) || IsHostedProcessPath(target_path)))
+                return app_id;
+
             return MakePathKey(target_path);
+        }
+
+        if (!app_id.empty())
+            return app_id;
     }
 
     return MakePathKey(path);

@@ -247,10 +247,8 @@ LRESULT DesktopBar::Init(LPCREATESTRUCT pcs)
 
     //LoadSSO(); /* load in main() by SSOThread */
 
-    if (JCFG2_DEF("JS_QUICKLAUNCH", "visible", true).ToBool()) {
-        _hwndQuickLaunch = QuickLaunchBar::Create(_hwnd);
-        _iQuickLaunchPadding = JCFG2_DEF("JS_QUICKLAUNCH", "padding", 4).ToInt();
-    }
+    _hwndQuickLaunch = 0;
+    _iQuickLaunchPadding = 0;
 
     SetTimer(_hwnd, 0, 1000, NULL);
 
@@ -812,8 +810,11 @@ void DesktopBar::Resize(int cx, int cy)
             if (_hwndQuickLaunch)
                 DeferWindowPos(hdwp, _hwndQuickLaunch, 0, _taskbar_pos, 1, quicklaunch_width, cy - 2, SWP_NOZORDER | SWP_NOACTIVATE);
 
+            bool modern_taskbar = taskbar_draw::IsModernTaskbarEnabled();
+            int tb_y = modern_taskbar ? 0 : 1;
+            int tb_h = modern_taskbar ? cy : cy - 2;
             if (_hwndTaskBar)
-                DeferWindowPos(hdwp, _hwndTaskBar, 0, _taskbar_pos + quicklaunch_width, 1, cx - _taskbar_pos - quicklaunch_width - (notifyarea_width + 1), cy - 2, SWP_NOZORDER | SWP_NOACTIVATE);
+                DeferWindowPos(hdwp, _hwndTaskBar, 0, _taskbar_pos + quicklaunch_width, tb_y, cx - _taskbar_pos - quicklaunch_width - (notifyarea_width + 1), tb_h, SWP_NOZORDER | SWP_NOACTIVATE);
         }
     }
 
