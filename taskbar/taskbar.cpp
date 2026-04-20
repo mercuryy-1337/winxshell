@@ -99,6 +99,26 @@ static bool HasVisibleOrderKey(const vector<String> &order, const String &key)
     return false;
 }
 
+static String ResolvePinnedAlias(const map<String, String> &aliases, const String &key)
+{
+    if (key.empty())
+        return key;
+
+    map<String, String>::const_iterator found = aliases.find(key);
+    if (found != aliases.end() && !found->second.empty())
+        return found->second;
+
+    return key;
+}
+
+static void RegisterPinnedAlias(map<String, String> &aliases, const String &canonical_key, const String &alias_key)
+{
+    if (canonical_key.empty() || alias_key.empty() || canonical_key == alias_key)
+        return;
+
+    aliases[alias_key] = canonical_key;
+}
+
 static String GetPinnedShortcutDisplayName(LPCTSTR path)
 {
     SHFILEINFO sfi = { 0 };
@@ -109,6 +129,24 @@ static String GetPinnedShortcutDisplayName(LPCTSTR path)
     lstrcpyn(display_name, PathFindFileName(path), COUNTOF(display_name));
     PathRemoveExtension(display_name);
     return display_name;
+}
+
+static bool IsExplorerPinnedShortcut(LPCTSTR shortcut_path, const String &pin_title, LPCTSTR target_path)
+{
+    if (target_path && *target_path && taskbar_identity::IsExplorerProcessPath(target_path))
+        return true;
+
+    if (shortcut_path && *shortcut_path) {
+        LPCTSTR file_name = PathFindFileName(shortcut_path);
+        if (file_name) {
+            if (!_tcsicmp(file_name, TEXT("File Explorer.lnk")) ||
+                !_tcsicmp(file_name, TEXT("Explorer.lnk")))
+                return true;
+        }
+    }
+
+    String explorer_title = ResString(IDS_TITLE);
+    return !pin_title.empty() && !_tcsicmp(pin_title.c_str(), explorer_title.c_str());
 }
 
 static bool IsExcludedTaskbarClass(LPCTSTR class_name)
@@ -1021,6 +1059,7 @@ BOOL CALLBACK TaskBar::EnumWndProc(HWND hwnd, LPARAM lparam)
         }
 
         String app_key = taskbar_identity::GetWindowAppKey(hwnd);
+        app_key = ResolvePinnedAlias(pThis->_pinned_aliases, app_key);
         if (app_key.empty())
             return TRUE;
 
@@ -1118,6 +1157,7 @@ void TaskBar::ApplyBackgroundStyle()
 void TaskBar::LoadPinnedEntries()
 {
     _pinned_app_keys.clear();
+    _pinned_aliases.clear();
 
     if (!JCFG2_DEF("JS_QUICKLAUNCH", "hide_fileexplorer", false).ToBool()) {
         String app_key = taskbar_identity::GetExplorerAppKey();
@@ -1130,6 +1170,7 @@ void TaskBar::LoadPinnedEntries()
             entry._launch_path = TEXT("");
             entry._launch_kind = TASKBAR_LAUNCH_EXPLORER;
             _pinned_app_keys.insert(app_key);
+            RegisterPinnedAlias(_pinned_aliases, app_key, taskbar_identity::MakeAppIdKey(TEXT("Microsoft.Windows.Explorer")));
             if (!HasVisibleOrderKey(_visible_order, app_key))
                 _visible_order.push_back(app_key);
         }
@@ -1159,18 +1200,48 @@ void TaskBar::LoadPinnedEntries()
             continue;
 
         String shortcut_path = pinned_dir + TEXT("\\") + find_data.cFileName;
+        String pin_title = GetPinnedShortcutDisplayName(shortcut_path.c_str());
         String app_key = taskbar_identity::GetShortcutAppKey(shortcut_path.c_str());
-        if (app_key.empty() || _pinned_app_keys.find(app_key) != _pinned_app_keys.end())
+        String shortcut_path_key = taskbar_identity::MakePathKey(shortcut_path.c_str());
+
+        String shortcut_app_id = taskbar_identity::ReadShortcutAppId(shortcut_path.c_str());
+        TCHAR target_path[MAX_PATH] = { 0 };
+        GetShortcutPath(shortcut_path.c_str(), target_path, COUNTOF(target_path));
+        String target_path_key;
+        if (target_path[0])
+            target_path_key = taskbar_identity::MakePathKey(target_path);
+
+        if (IsExplorerPinnedShortcut(shortcut_path.c_str(), pin_title, target_path))
+            app_key = taskbar_identity::GetExplorerAppKey();
+
+        app_key = ResolvePinnedAlias(_pinned_aliases, app_key);
+        shortcut_path_key = ResolvePinnedAlias(_pinned_aliases, shortcut_path_key);
+        if (!target_path_key.empty())
+            target_path_key = ResolvePinnedAlias(_pinned_aliases, target_path_key);
+        if (!shortcut_app_id.empty())
+            shortcut_app_id = ResolvePinnedAlias(_pinned_aliases, shortcut_app_id);
+
+        if (app_key.empty())
             continue;
+
+        if (_pinned_app_keys.find(app_key) != _pinned_app_keys.end()) {
+            RegisterPinnedAlias(_pinned_aliases, app_key, shortcut_path_key);
+            RegisterPinnedAlias(_pinned_aliases, app_key, shortcut_app_id);
+            RegisterPinnedAlias(_pinned_aliases, app_key, target_path_key);
+            continue;
+        }
 
         TaskBarEntry &entry = _map[app_key];
         entry._app_key = app_key;
         entry._pinned = true;
-        entry._pin_title = GetPinnedShortcutDisplayName(shortcut_path.c_str());
+        entry._pin_title = pin_title;
         entry._title = entry._pin_title;
         entry._launch_path = shortcut_path;
         entry._launch_kind = TASKBAR_LAUNCH_SHORTCUT;
         _pinned_app_keys.insert(app_key);
+        RegisterPinnedAlias(_pinned_aliases, app_key, shortcut_path_key);
+        RegisterPinnedAlias(_pinned_aliases, app_key, shortcut_app_id);
+        RegisterPinnedAlias(_pinned_aliases, app_key, target_path_key);
         if (!HasVisibleOrderKey(_visible_order, app_key))
             _visible_order.push_back(app_key);
     } while (FindNextFile(find_handle, &find_data));
@@ -1397,6 +1468,12 @@ void TaskBar::ResizeButtons()
 
 int TaskBar::GetPreferredWidth() const
 {
+    if (_htoolbar && IsWindow(_htoolbar)) {
+        SIZE max_size = { 0 };
+        if (SendMessage(_htoolbar, TB_GETMAXSIZE, 0, (LPARAM)&max_size) && max_size.cx > 0)
+            return max_size.cx + DPI_SX(4);
+    }
+
     int btns = 0;
     for (TaskBarMap::const_iterator it = _map.begin(); it != _map.end(); ++it)
         if (it->second._id)

@@ -121,6 +121,7 @@ protected:
     bool        _animation_timer_running;
     int         _preferred_btn_width;
     set<String> _pinned_app_keys;
+    map<String, String> _pinned_aliases;
     vector<String> _visible_order;
     const UINT WM_SHELLHOOK;
 

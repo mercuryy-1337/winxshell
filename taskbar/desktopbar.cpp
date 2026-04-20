@@ -28,6 +28,9 @@
 
 #include <precomp.h>
 
+#include <gdiplus.h>
+#pragma comment(lib, "gdiplus.lib")
+
 #include "../resource.h"
 
 // #include "../DUI/Helper.h"
@@ -130,6 +133,166 @@ CreateSolidBitmap(HDC hdc, int width, int height, COLORREF cref)
     return hbmp;
 }
 
+static UINT GetStartButtonPngFrameCount(Gdiplus::Bitmap &source)
+{
+    UINT width = source.GetWidth();
+    UINT height = source.GetHeight();
+
+    if (width == 0 || height == 0)
+        return 0;
+
+    if (height > width && (height % width) == 0)
+        return height / width;
+
+    if (width > height && (width % height) == 0)
+        return width / height;
+
+    return 1;
+}
+
+static int GetStartButtonIconSize()
+{
+    int icon_size = TASKBAR_ICON_SIZE + DPI_SX(2);
+    int max_icon_size = DESKTOPBARBAR_HEIGHT - DPI_SY(10);
+
+    if (icon_size > max_icon_size)
+        icon_size = max_icon_size;
+
+    if (icon_size < TASKBAR_ICON_SIZE)
+        icon_size = TASKBAR_ICON_SIZE;
+
+    return icon_size;
+}
+
+static Gdiplus::Rect GetStartButtonPngContentRect(Gdiplus::Bitmap &source, const Gdiplus::Rect &frame_rect)
+{
+    int min_x = frame_rect.X + frame_rect.Width;
+    int min_y = frame_rect.Y + frame_rect.Height;
+    int max_x = frame_rect.X - 1;
+    int max_y = frame_rect.Y - 1;
+
+    for (int y = frame_rect.Y; y < frame_rect.Y + frame_rect.Height; ++y) {
+        for (int x = frame_rect.X; x < frame_rect.X + frame_rect.Width; ++x) {
+            Gdiplus::Color pixel;
+            if (source.GetPixel(x, y, &pixel) == Gdiplus::Ok && pixel.GetAlpha() > 8) {
+                if (x < min_x)
+                    min_x = x;
+                if (y < min_y)
+                    min_y = y;
+                if (x > max_x)
+                    max_x = x;
+                if (y > max_y)
+                    max_y = y;
+            }
+        }
+    }
+
+    if (max_x < min_x || max_y < min_y)
+        return frame_rect;
+
+    if (min_x > frame_rect.X)
+        --min_x;
+    if (min_y > frame_rect.Y)
+        --min_y;
+    if (max_x + 1 < frame_rect.X + frame_rect.Width)
+        ++max_x;
+    if (max_y + 1 < frame_rect.Y + frame_rect.Height)
+        ++max_y;
+
+    return Gdiplus::Rect(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1);
+}
+
+static String GetExecutableDirectory();
+
+static String ResolveStartButtonPngPath(const TCHAR *wkPath)
+{
+    String exe_dir = GetExecutableDirectory();
+    String candidate;
+
+    if (!exe_dir.empty()) {
+        candidate = exe_dir + TEXT("\\win11.png");
+        if (PathFileExists(candidate.c_str()))
+            return candidate;
+    }
+
+    candidate = FmtString(TEXT("%s\\taskbar\\icons\\win11.png"), wkPath);
+    if (PathFileExists(candidate.c_str()))
+        return candidate;
+
+    if (!exe_dir.empty()) {
+        candidate = exe_dir + TEXT("\\W11SE Original.png");
+        if (PathFileExists(candidate.c_str()))
+            return candidate;
+    }
+
+    candidate = FmtString(TEXT("%s\\taskbar\\icons\\W11SE Original.png"), wkPath);
+    if (PathFileExists(candidate.c_str()))
+        return candidate;
+
+    return String();
+}
+
+static HICON LoadStartButtonPngIcon(LPCTSTR path, int icon_size, UINT frame_index)
+{
+    if (!path || !*path)
+        return NULL;
+
+    Gdiplus::Bitmap source(path);
+    if (source.GetLastStatus() != Gdiplus::Ok)
+        return NULL;
+
+    UINT frame_count = GetStartButtonPngFrameCount(source);
+    if (frame_count == 0)
+        return NULL;
+
+    if (frame_index >= frame_count)
+        frame_index = frame_count - 1;
+
+    bool vertical_strip = source.GetHeight() > source.GetWidth() && (source.GetHeight() % source.GetWidth()) == 0;
+    UINT frame_size = vertical_strip ? source.GetWidth() : source.GetHeight();
+    Gdiplus::Rect src_rect(
+        vertical_strip ? 0 : (INT)(frame_index * frame_size),
+        vertical_strip ? (INT)(frame_index * frame_size) : 0,
+        frame_size,
+        frame_size);
+    src_rect = GetStartButtonPngContentRect(source, src_rect);
+
+    Gdiplus::Bitmap scaled(icon_size, icon_size, PixelFormat32bppARGB);
+    if (scaled.GetLastStatus() != Gdiplus::Ok)
+        return NULL;
+
+    {
+        Gdiplus::Graphics graphics(&scaled);
+        graphics.Clear(Gdiplus::Color(0, 0, 0, 0));
+        graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+        graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+        graphics.DrawImage(&source,
+            Gdiplus::Rect(0, 0, icon_size, icon_size),
+            src_rect.X,
+            src_rect.Y,
+            src_rect.Width,
+            src_rect.Height,
+            Gdiplus::UnitPixel);
+    }
+
+    HICON hIcon = NULL;
+    if (scaled.GetHICON(&hIcon) != Gdiplus::Ok)
+        return NULL;
+
+    return hIcon;
+}
+
+static String GetExecutableDirectory()
+{
+    TCHAR module_path[MAX_PATH] = { 0 };
+    if (!GetModuleFileName(NULL, module_path, COUNTOF(module_path)) || !module_path[0])
+        return String();
+
+    PathRemoveFileSpec(module_path);
+    return String(module_path);
+}
+
 LRESULT DesktopBar::Init(LPCREATESTRUCT pcs)
 {
     if (super::Init(pcs))
@@ -145,6 +308,7 @@ LRESULT DesktopBar::Init(LPCREATESTRUCT pcs)
     _deskbar_pos_y = DESKTOPBAR_TOP;
     _centered_layout = taskbar_draw::IsCenteredEnabled() && JCFG_TB(2, "userebar").ToBool() == FALSE;
 
+    int start_icon_size = GetStartButtonIconSize();
     int start_btn_width = DESKTOPBARBAR_HEIGHT + 8; //DPI_SX((TASKBAR_ICON_SIZE + rect.right + (TASKBAR_ICON_SIZE / 4)));
     if (_centered_layout) {
         start_btn_width = taskbar_draw::GetButtonSlotWidth();
@@ -203,26 +367,54 @@ LRESULT DesktopBar::Init(LPCREATESTRUCT pcs)
         }
     }
 
-    HICON starticon_normal = NULL, starticon_pushed = NULL;
-    if (idStartIcon == 0) {
-        // load Resources\*.ico
-        const TCHAR *wkPath = NULL;
-        wkPath = JVAR("JVAR_MODULEPATH").ToString().c_str();
+    HICON starticon_normal = NULL, starticon_hover = NULL, starticon_pushed = NULL;
+    const TCHAR *wkPath = JVAR("JVAR_MODULEPATH").ToString().c_str();
 #ifdef _DEBUG
-        wkPath = TEXT(".");
+    wkPath = TEXT(".");
 #endif // _DEBUG
 
+    String start_png_path = ResolveStartButtonPngPath(wkPath);
+
+    if (start_icon.compare(TEXT("empty")) != 0 && !start_png_path.empty() && PathFileExists(start_png_path.c_str())) {
+        Gdiplus::Bitmap stack_image(start_png_path.c_str());
+        UINT frame_count = stack_image.GetLastStatus() == Gdiplus::Ok ? GetStartButtonPngFrameCount(stack_image) : 0;
+
+        if (frame_count >= 3) {
+            starticon_normal = LoadStartButtonPngIcon(start_png_path.c_str(), start_icon_size, 1);
+            starticon_hover = LoadStartButtonPngIcon(start_png_path.c_str(), start_icon_size, 2);
+            starticon_pushed = LoadStartButtonPngIcon(start_png_path.c_str(), start_icon_size, 0);
+        } else if (frame_count == 2) {
+            starticon_normal = LoadStartButtonPngIcon(start_png_path.c_str(), start_icon_size, 0);
+            starticon_hover = LoadStartButtonPngIcon(start_png_path.c_str(), start_icon_size, 1);
+            starticon_pushed = LoadStartButtonPngIcon(start_png_path.c_str(), start_icon_size, 1);
+        } else if (frame_count == 1) {
+            starticon_normal = LoadStartButtonPngIcon(start_png_path.c_str(), start_icon_size, 0);
+            if (starticon_normal) {
+                starticon_hover = CopyIcon(starticon_normal);
+                starticon_pushed = CopyIcon(starticon_normal);
+            }
+        }
+    }
+
+    if (!starticon_normal && idStartIcon == 0) {
         String sPath = FmtString(TEXT("%s\\Resources\\%s\\Start_Normal.ico"), wkPath, sThemeStyle.c_str());
-        starticon_normal = (HICON)LoadImage(NULL, sPath.c_str(), IMAGE_ICON, TASKBAR_ICON_SIZE, TASKBAR_ICON_SIZE,
+        starticon_normal = (HICON)LoadImage(NULL, sPath.c_str(), IMAGE_ICON, start_icon_size, start_icon_size,
             LR_DEFAULTCOLOR | LR_CREATEDIBSECTION | LR_LOADFROMFILE);
 
         sPath = FmtString(TEXT("%s\\Resources\\%s\\Start_Pushed.ico"), wkPath, sThemeStyle.c_str());
-        starticon_pushed = (HICON)LoadImage(NULL, sPath.c_str(), IMAGE_ICON, TASKBAR_ICON_SIZE, TASKBAR_ICON_SIZE,
+        starticon_pushed = (HICON)LoadImage(NULL, sPath.c_str(), IMAGE_ICON, start_icon_size, start_icon_size,
             LR_DEFAULTCOLOR | LR_CREATEDIBSECTION | LR_LOADFROMFILE);
     }
+
     COLORREF clrSWButtonPushed = JValueToColor(JCFG2_DEF("JS_STARTMENU", "start_pushed_bkcolor", (int)RGB(51, 53, 55)));
     HBRUSH hbrSWButtonPushed = CreateSolidBrush(clrSWButtonPushed);
-    if (idStartIcon != 0) {
+    if (starticon_normal) {
+        if (!starticon_hover)
+            starticon_hover = CopyIcon(starticon_normal);
+        if (!starticon_pushed)
+            starticon_pushed = CopyIcon(starticon_hover ? starticon_hover : starticon_normal);
+        new StartButton(hwndStart, starticon_normal, starticon_hover, starticon_pushed, TASKBAR_BRUSH(), hbrSWButtonPushed, TASKBAR_TEXTCOLOR(), true);
+    } else if (idStartIcon != 0) {
         new StartButton(hwndStart, idStartIcon, TASKBAR_BRUSH(), hbrSWButtonPushed, TASKBAR_TEXTCOLOR(), true);
     } else {
         new StartButton(hwndStart, starticon_normal, starticon_pushed, TASKBAR_BRUSH(), hbrSWButtonPushed, TASKBAR_TEXTCOLOR(), true);
@@ -315,14 +507,20 @@ LRESULT DesktopBar::Init(LPCREATESTRUCT pcs)
 
 StartButton::StartButton(HWND hwnd, UINT nid, HBRUSH hbrush, HBRUSH hbrush2,
     COLORREF textcolor, bool flat)
-    : PictureButton2(hwnd, SizeIcon(nid, TASKBAR_ICON_SIZE),
-        SizeIcon(nid + 1, TASKBAR_ICON_SIZE), hbrush, hbrush2, textcolor, flat)
+    : PictureButton2(hwnd, SizeIcon(nid, GetStartButtonIconSize()),
+        SizeIcon(nid + 1, GetStartButtonIconSize()), hbrush, hbrush2, textcolor, flat)
 {
 }
 
 StartButton::StartButton(HWND hwnd, HICON hIcon, HICON hIcon2, HBRUSH hbrush, HBRUSH hbrush2,
     COLORREF textcolor, bool flat)
     : PictureButton2(hwnd, hIcon, hIcon2, hbrush, hbrush2, textcolor, flat)
+{
+}
+
+StartButton::StartButton(HWND hwnd, HICON hIcon, HICON hIconHover, HICON hIconPressed, HBRUSH hbrush, HBRUSH hbrush2,
+    COLORREF textcolor, bool flat)
+    : PictureButton2(hwnd, hIcon, hIconHover, hIconPressed, hbrush, hbrush2, textcolor, flat)
 {
 }
 
@@ -779,12 +977,20 @@ void DesktopBar::Resize(int cx, int cy)
         if (!taskbar_draw::IsModernTaskbarEnabled() || !taskbar_draw::IsCenteredEnabled())
             quicklaunch_padding = (quicklaunch_width > 0 && taskbar_width > 0) ? _iQuickLaunchPadding : 0;
         int start_gap = (_hwndQuickLaunch || taskbar_width > 0) ? _start_button_gap : 0;
-        int centerable_width = cx - notifyarea_width;
         int group_width = _start_button_width + start_gap + quicklaunch_width + quicklaunch_padding + taskbar_width;
-        bool can_center = _centered_layout && group_width > 0 && group_width <= centerable_width;
+        int group_left = 0;
+        int right_wall = cx - notifyarea_width;
+        bool can_center = _centered_layout && group_width > 0;
 
         if (can_center) {
-            int group_left = (centerable_width - group_width) / 2;
+            group_left = (cx - group_width) / 2;
+            if (group_left + group_width > right_wall)
+                group_left = right_wall - group_width;
+            if (group_left < 0)
+                group_left = 0;
+        }
+
+        if (can_center) {
             int next_x = group_left;
 
             if (_hwndStartButton) {

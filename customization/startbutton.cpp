@@ -15,17 +15,18 @@ void PictureButton2::DrawItem(LPDRAWITEMSTRUCT dis)
         state |= DFCS_INACTIVE;
 
     POINT imagePos;
-    RECT textRect;
-    int dt_flags;
-
 
     // horizontal centered, vertical centered
     imagePos.x = (dis->rcItem.left + dis->rcItem.right - _cx) / 2;
     imagePos.y = (dis->rcItem.top + dis->rcItem.bottom - _cy) / 2;
 
+    if (_hovered && _hHoverIcon)
+        drawIcon = _hHoverIcon;
+
     if (dis->itemState & ODS_SELECTED) {
         state |= DFCS_PUSHED;
-        drawIcon = _hHotIcon;
+        if (_hPressedIcon)
+            drawIcon = _hPressedIcon;
         drawBrush = _hHotBrush;
     }
 

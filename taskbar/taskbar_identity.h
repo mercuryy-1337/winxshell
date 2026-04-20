@@ -21,11 +21,24 @@ inline String MakePathKey(LPCTSTR path)
         return String();
 
     TCHAR full_path[MAX_PATH] = { 0 };
-    if (!GetFullPathName(path, COUNTOF(full_path), full_path, NULL) || !full_path[0])
+    if (!ExpandEnvironmentStrings(path, full_path, COUNTOF(full_path)) || !full_path[0])
+        lstrcpyn(full_path, path, COUNTOF(full_path));
+
+    PathUnquoteSpaces(full_path);
+
+    TCHAR normalized_path[MAX_PATH] = { 0 };
+    if (!GetFullPathName(full_path, COUNTOF(normalized_path), normalized_path, NULL) || !normalized_path[0])
+        lstrcpyn(normalized_path, full_path, COUNTOF(normalized_path));
+
+    TCHAR long_path[MAX_PATH] = { 0 };
+    if (GetLongPathName(normalized_path, long_path, COUNTOF(long_path)) && long_path[0])
+        lstrcpyn(normalized_path, long_path, COUNTOF(normalized_path));
+
+    if (!normalized_path[0])
         lstrcpyn(full_path, path, COUNTOF(full_path));
 
     String key = TEXT("path:");
-    key += ToLowerString(full_path);
+    key += ToLowerString(normalized_path[0] ? normalized_path : full_path);
     return key;
 }
 
