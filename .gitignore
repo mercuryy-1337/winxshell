@@ -30,3 +30,4 @@ wxsStub32.dll
 UI_Debug.bat
 /dist
 /test
+/release

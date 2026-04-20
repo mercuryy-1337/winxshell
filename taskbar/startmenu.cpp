@@ -2007,6 +2007,43 @@ static bool SearchResultExists(const vector<ModernStartMenuItem> &items, const M
     return false;
 }
 
+static bool HasRenderableIcon(const Icon &icon)
+{
+    return icon.get_icontype() == IT_SYSCACHE || icon.get_hicon() != NULL;
+}
+
+static ICON_ID ExtractPathResultIcon(const String &path, int icon_size)
+{
+    if (path.empty())
+        return ICID_NONE;
+
+    SHFILEINFO sfi = { 0 };
+    UINT shgfi_flags = SHGFI_ICON | (icon_size >= ICON_SIZE_LARGE ? SHGFI_LARGEICON : SHGFI_SMALLICON);
+    if (SHGetFileInfo(path.c_str(), 0, &sfi, sizeof(sfi), shgfi_flags) && sfi.hIcon)
+        return (ICON_ID)g_Globals._icon_cache.add(sfi.hIcon, IT_CACHED);
+
+    sfi = SHFILEINFO();
+    shgfi_flags = SHGFI_SYSICONINDEX | (icon_size >= ICON_SIZE_LARGE ? SHGFI_LARGEICON : SHGFI_SMALLICON);
+    HIMAGELIST himl = (HIMAGELIST)SHGetFileInfo(path.c_str(), 0, &sfi, sizeof(sfi), shgfi_flags);
+    if (himl) {
+        HICON hicon = ImageList_GetIcon(himl, sfi.iIcon, ILD_NORMAL);
+        if (hicon)
+            return (ICON_ID)g_Globals._icon_cache.add(hicon, IT_CACHED);
+    }
+
+    try {
+        ShellPath shell_path(path.c_str());
+        if ((LPCITEMIDLIST)shell_path) {
+            const Icon &pidl_icon = g_Globals._icon_cache.extract((LPCITEMIDLIST)shell_path, ICF_FROM_ICON_SIZE(icon_size));
+            if (HasRenderableIcon(pidl_icon))
+                return (ICON_ID)pidl_icon;
+        }
+    } catch (COMException &) {
+    }
+
+    return ICID_NONE;
+}
+
 static bool ModernStartMenuHasMeta(const vector<ModernStartMenuItem> &items, const String &meta_text)
 {
     for (size_t index = 0; index < items.size(); ++index) {
@@ -2340,6 +2377,16 @@ COLORREF StartMenuRoot::GetSearchFillColor() const
     return (_search_active || IsSearchResultsVisible()) ? RGB(46, 49, 54) : RGB(39, 42, 46);
 }
 
+static int GetSearchResultRowHeight()
+{
+    return DPI_SY(52);
+}
+
+static int GetSearchResultRowGap(bool show_separator_after)
+{
+    return DPI_SY(6) + (show_separator_after ? DPI_SY(16) : 0);
+}
+
 int StartMenuRoot::GetVisibleAllProgramCount() const
 {
     RECT list_rect = GetAllAppsListRect();
@@ -2367,13 +2414,19 @@ int StartMenuRoot::GetVisibleDriveFolderCount() const
 int StartMenuRoot::GetVisibleSearchResultCount() const
 {
     RECT list_rect = GetSearchResultsRect();
-    int row_height = DPI_SY(52);
-    int row_gap = DPI_SY(6);
-    int row_pitch = row_height + row_gap;
-    int available = list_rect.bottom - list_rect.top;
-    int count = row_pitch > 0 ? (available + row_gap) / row_pitch : 0;
+    int row_height = GetSearchResultRowHeight();
+    int top = list_rect.top;
+    int count = 0;
 
-    return min(max(0, count), max(0, (int)_search_results.size() - _search_result_scroll));
+    for (int index = _search_result_scroll; index < (int)_search_results.size(); ++index) {
+        if (top + row_height > list_rect.bottom)
+            break;
+
+        ++count;
+        top += row_height + GetSearchResultRowGap(_search_results[index]._show_separator_after);
+    }
+
+    return count;
 }
 
 int StartMenuRoot::GetVisibleSearchHomeRecentCount() const
@@ -2449,12 +2502,14 @@ RECT StartMenuRoot::GetSearchResultsRect() const
 RECT StartMenuRoot::GetSearchResultRect(int index) const
 {
     RECT list_rect = GetSearchResultsRect();
-    int row_height = DPI_SY(52);
-    int row_gap = DPI_SY(6);
-    int visible_index = index - _search_result_scroll;
+    int row_height = GetSearchResultRowHeight();
+    int top = list_rect.top;
+
+    for (int item_index = _search_result_scroll; item_index < index; ++item_index)
+        top += row_height + GetSearchResultRowGap(_search_results[item_index]._show_separator_after);
 
     return MakeRectWH(list_rect.left,
-        list_rect.top + visible_index * (row_height + row_gap),
+        top,
         max(0, (list_rect.right - list_rect.left) - DPI_SX(10)),
         row_height);
 }
@@ -3013,10 +3068,11 @@ void StartMenuRoot::EnsureItemIcon(ModernStartMenuItem &item, int icon_size)
         DWORD file_attributes = GetFileAttributes(normalized_path.c_str());
 
         if (file_attributes != INVALID_FILE_ATTRIBUTES) {
-            item._icon_id = (ICON_ID)g_Globals._icon_cache.extract(normalized_path.c_str(),
-                ICF_FROM_ICON_SIZE(icon_size) | ICF_NOLINKOVERLAY);
-            if (item._icon_id > ICID_NONE)
+            ICON_ID extracted_icon = ExtractPathResultIcon(normalized_path, icon_size);
+            if (extracted_icon > ICID_NONE) {
+                item._icon_id = extracted_icon;
                 return;
+            }
 
             if (file_attributes & FILE_ATTRIBUTE_DIRECTORY) {
                 item._icon_id = ICID_FOLDER;
@@ -3135,6 +3191,7 @@ void StartMenuRoot::UpdateSearchResults()
             query_is_directory ? TEXT("Open folder") : TEXT("Open path"));
         path_item._path = normalized_query;
         path_item._autocomplete_text = query_is_directory ? EnsureTrailingBackslash(normalized_query) : normalized_query;
+        path_item._show_separator_after = query_is_directory;
         _search_results.push_back(path_item);
     }
 
@@ -3173,6 +3230,9 @@ void StartMenuRoot::UpdateSearchResults()
                 FindClose(find_handle);
             }
         }
+
+        if (!_search_results.empty() && _search_results[0]._show_separator_after && _search_results.size() < 2)
+            _search_results[0]._show_separator_after = false;
 
         return;
     }
@@ -4114,6 +4174,7 @@ void StartMenuRoot::Paint(HDC canvas)
     COLORREF list_fill = RGB(44, 47, 52);
     COLORREF list_hover_fill = RGB(61, 65, 71);
     COLORREF list_border = RGB(57, 61, 66);
+    COLORREF list_separator = RGB(112, 117, 123);
 
     FillRoundedRectPrimitive(canvas, client_rect, panel_color, metrics._corner_radius, border_color);
 
@@ -4180,6 +4241,17 @@ void StartMenuRoot::Paint(HDC canvas)
             SetTextColor(canvas, meta_text);
             DrawText(canvas, item._meta_text.empty() ? TEXT("Suggestion") : item._meta_text.c_str(), -1, &meta_rect,
                 DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+            if (item._show_separator_after && index + 1 < (int)_search_results.size()) {
+                int separator_gap = GetSearchResultRowGap(true);
+                HPEN separator_pen = CreatePen(PS_SOLID, max(2, DPI_SX(2)), list_separator);
+                HGDIOBJ old_pen = SelectObject(canvas, separator_pen);
+                int line_y = item_rect.bottom + (separator_gap / 2);
+                MoveToEx(canvas, item_rect.left + DPI_SX(8), line_y, NULL);
+                LineTo(canvas, item_rect.right - DPI_SX(8), line_y);
+                SelectObject(canvas, old_pen);
+                DeleteObject(separator_pen);
+            }
         }
 
         DrawVerticalScrollIndicator(canvas, GetSearchResultsRect(), (int)_search_results.size(), GetVisibleSearchResultCount(), _search_result_scroll);

@@ -352,7 +352,7 @@ struct StartMenuRootCreateInfo {
 
 struct ModernStartMenuItem {
     ModernStartMenuItem()
-        : _id(0), _icon_id(ICID_NONE), _entry(NULL), _is_command(false)
+        : _id(0), _icon_id(ICID_NONE), _entry(NULL), _is_command(false), _show_separator_after(false)
     {
     }
 
@@ -362,7 +362,8 @@ struct ModernStartMenuItem {
           _meta_text(meta_text ? meta_text : TEXT("")),
           _icon_id(icon_id),
           _entry(entry),
-          _is_command(is_command)
+            _is_command(is_command),
+            _show_separator_after(false)
     {
     }
 
@@ -374,6 +375,7 @@ struct ModernStartMenuItem {
     ICON_ID _icon_id;
     Entry  *_entry;
     bool    _is_command;
+    bool    _show_separator_after;
 };
 
 
