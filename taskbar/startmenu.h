@@ -369,6 +369,8 @@ struct ModernStartMenuItem {
     int     _id;
     String  _title;
     String  _meta_text;
+    String  _path;
+    String  _autocomplete_text;
     ICON_ID _icon_id;
     Entry  *_entry;
     bool    _is_command;
@@ -394,12 +396,16 @@ protected:
     enum HOT_AREA {
         HOT_NONE,
         HOT_SEARCH,
+        HOT_SEARCH_RESULT,
+        HOT_SEARCH_HOME_RECENT,
+        HOT_SEARCH_HOME_TOP_APP,
         HOT_PROGRAMS_BUTTON,
         HOT_RECOMMENDED_BUTTON,
         HOT_PROGRAM,
         HOT_RECOMMENDED,
+        HOT_ALL_PROGRAM,
+        HOT_DRIVE_FOLDER,
         HOT_PROFILE,
-        HOT_POWER
     };
 
     LRESULT Init(LPCREATESTRUCT pcs);
@@ -409,21 +415,49 @@ protected:
     void    RebuildModernContent();
     void    BuildProgramItems();
     void    BuildRecommendedItems();
+    void    BuildSearchRecentItems();
+    void    BuildDriveFolderItems();
     void    AddFallbackProgramItems();
     void    EnsureItemIcon(ModernStartMenuItem &item, int icon_size);
     bool    ExecuteItem(const ModernStartMenuItem &item);
+    bool    ExecuteSearchSelection();
+    bool    AutocompleteSearchSelection();
     void    UpdatePlacement();
     void    ApplyWindowRegion();
+    void    LayoutSearchEdit();
+    void    RefreshSearchEditBrush();
+    void    SyncSearchEditText();
     void    BeginMouseTrack();
     void    UpdateHotState(POINT pt);
     void    ClearHotState();
     void    InvalidateHotArea(HOT_AREA area, int index);
+    void    UpdateSearchResults();
+    void    SetSearchQuery(const String &query, bool sync_edit = true);
+    LRESULT HandleSearchEditKeyDown(WPARAM wparam, LPARAM lparam);
+    bool    HandleMouseWheel(short wheel_delta, POINT screen_pt);
+    bool    AdjustScrollOffset(int *offset, int item_count, int visible_count, int delta_lines);
     bool    HitTest(POINT pt, HOT_AREA *area, int *index) const;
+    bool    IsSearchResultsVisible() const;
+    bool    IsSearchHomeVisible() const;
     int     GetVisibleProgramCount() const;
     int     GetVisibleRecommendedCount() const;
+    int     GetVisibleAllProgramCount() const;
+    int     GetVisibleDriveFolderCount() const;
+    int     GetVisibleSearchResultCount() const;
+    int     GetVisibleSearchHomeRecentCount() const;
+    int     GetVisibleSearchHomeTopAppCount() const;
     HFONT   CreateMenuFont(int point_size, int weight) const;
+    COLORREF GetSearchFillColor() const;
 
     RECT    GetSearchRect() const;
+    RECT    GetSearchResultsRect() const;
+    RECT    GetSearchResultRect(int index) const;
+    RECT    GetSearchHomeRecentHeaderRect() const;
+    RECT    GetSearchHomeRecentListRect() const;
+    RECT    GetSearchHomeRecentRowRect(int index) const;
+    RECT    GetSearchHomeTopAppsHeaderRect() const;
+    RECT    GetSearchHomeTopAppsGridRect() const;
+    RECT    GetSearchHomeTopAppRect(int index) const;
     RECT    GetProgramsHeaderRect() const;
     RECT    GetProgramsButtonRect() const;
     RECT    GetProgramsGridRect() const;
@@ -434,28 +468,47 @@ protected:
     RECT    GetRecommendedTileRect(int index) const;
     RECT    GetFooterRect() const;
     RECT    GetProfileRect() const;
-    RECT    GetPowerRect() const;
+    RECT    GetSearchEditRect() const;
+    RECT    GetAllAppsListRect() const;
+    RECT    GetAllProgramRowRect(int index) const;
+    RECT    GetDriveFoldersHeaderRect() const;
+    RECT    GetDriveFoldersListRect() const;
+    RECT    GetDriveFolderRowRect(int index) const;
     RECT    GetHotRect(HOT_AREA area, int index) const;
 
     int     _panel_width;
     int     _panel_height;
     int     _program_icon_size;
     int     _recommended_icon_size;
+    int     _search_result_scroll;
+    int     _all_program_scroll;
+    int     _drive_folder_scroll;
+
+    HWND    _hwndSearchEdit;
+    HBRUSH  _search_edit_brush;
+    COLORREF _search_edit_fill;
 
     vector<ModernStartMenuItem> _program_items;
+    vector<ModernStartMenuItem> _all_program_items;
     vector<ModernStartMenuItem> _recommended_items;
+    vector<ModernStartMenuItem> _drive_folder_items;
+    vector<ModernStartMenuItem> _search_results;
+    vector<ModernStartMenuItem> _search_recent_items;
     StartMenuShellDirs _recent_dirs;
 
     bool    _show_all_programs;
+    bool    _search_active;
     HOT_AREA _hot_area;
     int     _hot_index;
     bool    _tracking_mouse;
 
     HFONT   _title_font;
     HFONT   _section_font;
+    HFONT   _search_font;
     HFONT   _item_font;
     HFONT   _meta_font;
 
+    String  _search_query;
     String  _user_name;
 };
 

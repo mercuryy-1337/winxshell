@@ -32,6 +32,12 @@
 
 #include <precomp.h>
 
+#include <algorithm>
+#include <gdiplus.h>
+#include <uxtheme.h>
+
+#pragma comment(lib, "gdiplus.lib")
+
 #include "../resource.h"
 
 #include "desktopbar.h"
@@ -47,6 +53,58 @@ extern int JCfg_GetDesktopBarHeightWithDPI();
 #define SHELLPATH_CONTROL_PANEL     TEXT("::{21EC2020-3AEA-1069-A2DD-08002B30309D}")
 #define SHELLPATH_PRINTERS          TEXT("::{2227A280-3AEA-1069-A2DE-08002B30309D}")
 #define SHELLPATH_NET_CONNECTIONS   TEXT("::{7007ACC7-3202-11D1-AAD2-00805FC1270E}")
+
+#ifndef EM_SETCUEBANNER
+#define EM_SETCUEBANNER     0x1501
+#endif
+
+enum {
+    PM_STARTMENU_SEARCH_KEYDOWN = WM_APP + 0x40,
+    PM_STARTMENU_SEARCH_WHEEL = WM_APP + 0x41,
+    PM_STARTMENU_SEARCH_FOCUS = WM_APP + 0x42
+};
+
+struct StartMenuSearchEdit : public SubclassedWindow {
+    typedef SubclassedWindow super;
+
+    StartMenuSearchEdit(HWND hwnd, HWND hwnd_parent)
+        : super(hwnd),
+          _hwnd_parent(hwnd_parent)
+    {
+    }
+
+protected:
+    HWND _hwnd_parent;
+
+    LRESULT WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
+    {
+        switch (nmsg) {
+        case WM_KEYDOWN:
+            switch (wparam) {
+            case VK_ESCAPE:
+            case VK_RETURN:
+            case VK_TAB:
+            case VK_UP:
+            case VK_DOWN:
+            case VK_PRIOR:
+            case VK_NEXT:
+                return SendMessage(_hwnd_parent, PM_STARTMENU_SEARCH_KEYDOWN, wparam, lparam);
+            default:
+                break;
+            }
+            break;
+
+        case WM_MOUSEWHEEL:
+            return SendMessage(_hwnd_parent, PM_STARTMENU_SEARCH_WHEEL, wparam, lparam);
+
+        case WM_SETFOCUS:
+            SendMessage(_hwnd_parent, PM_STARTMENU_SEARCH_FOCUS, 0, 0);
+            break;
+        }
+
+        return super::WndProc(nmsg, wparam, lparam);
+    }
+};
 
 static int CommandHook(HWND hwnd, const TCHAR *act);
 
@@ -1610,24 +1668,24 @@ struct ModernStartMenuMetrics {
 static ModernStartMenuMetrics GetModernStartMenuMetrics()
 {
     ModernStartMenuMetrics metrics = {
-        DPI_SX(30),
-        DPI_SY(40),
+        DPI_SX(26),
+        DPI_SY(42),
+        DPI_SY(20),
         DPI_SY(24),
-        DPI_SY(30),
-        DPI_SX(76),
-        DPI_SY(16),
+        DPI_SX(54),
+        DPI_SY(12),
         6,
-        DPI_SY(76),
-        DPI_SX(4),
-        DPI_SY(10),
-        2,
-        DPI_SY(62),
-        DPI_SX(10),
+        DPI_SY(72),
+        DPI_SX(2),
         DPI_SY(8),
-        DPI_SY(58),
-        DPI_SX(34),
-        DPI_SX(34),
-        DPI_SX(28),
+        2,
+        DPI_SY(54),
+        DPI_SX(8),
+        DPI_SY(6),
+        DPI_SY(52),
+        DPI_SX(32),
+        DPI_SX(32),
+        DPI_SX(26),
         DPI_SX(24),
         DPI_SX(18),
         DPI_SX(18)
@@ -1662,19 +1720,72 @@ static bool IsNonEmptyRect(const RECT &rect)
     return rect.right > rect.left && rect.bottom > rect.top;
 }
 
+static void AddRoundedRectPath(Gdiplus::GraphicsPath &path, const RECT &rect, int radius)
+{
+    int diameter = max(1, radius * 2);
+    Gdiplus::Rect rounded_rect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+
+    if (rounded_rect.Width <= diameter || rounded_rect.Height <= diameter) {
+        path.AddRectangle(rounded_rect);
+        return;
+    }
+
+    path.AddArc(rounded_rect.X, rounded_rect.Y, diameter, diameter, 180.0f, 90.0f);
+    path.AddArc(rounded_rect.GetRight() - diameter, rounded_rect.Y, diameter, diameter, 270.0f, 90.0f);
+    path.AddArc(rounded_rect.GetRight() - diameter, rounded_rect.GetBottom() - diameter, diameter, diameter, 0.0f, 90.0f);
+    path.AddArc(rounded_rect.X, rounded_rect.GetBottom() - diameter, diameter, diameter, 90.0f, 90.0f);
+    path.CloseFigure();
+}
+
 static void FillRoundedRectPrimitive(HDC hdc, const RECT &rect, COLORREF fill, int radius, COLORREF border = CLR_INVALID)
 {
-    HBRUSH brush = CreateSolidBrush(fill);
-    HPEN pen = border == CLR_INVALID ? CreatePen(PS_NULL, 0, 0) : CreatePen(PS_SOLID, 1, border);
-    HGDIOBJ old_brush = SelectObject(hdc, brush);
-    HGDIOBJ old_pen = SelectObject(hdc, pen);
+    if (!IsNonEmptyRect(rect))
+        return;
 
-    RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, radius, radius);
+    Gdiplus::Graphics graphics(hdc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
 
-    SelectObject(hdc, old_pen);
-    SelectObject(hdc, old_brush);
-    DeleteObject(pen);
-    DeleteObject(brush);
+    Gdiplus::GraphicsPath path;
+    AddRoundedRectPath(path, rect, radius / 2);
+
+    Gdiplus::SolidBrush brush(Gdiplus::Color(255, GetRValue(fill), GetGValue(fill), GetBValue(fill)));
+    graphics.FillPath(&brush, &path);
+
+    if (border != CLR_INVALID) {
+        Gdiplus::Pen pen(Gdiplus::Color(255, GetRValue(border), GetGValue(border), GetBValue(border)), 1.0f);
+        graphics.DrawPath(&pen, &path);
+    }
+}
+
+static void DrawSearchGlyphPrimitive(HDC hdc, const RECT &rect, COLORREF color)
+{
+    if (!IsNonEmptyRect(rect))
+        return;
+
+    Gdiplus::Graphics graphics(hdc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+
+    Gdiplus::Pen pen(Gdiplus::Color(255, GetRValue(color), GetGValue(color), GetBValue(color)), 1.6f);
+    pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound, Gdiplus::DashCapRound);
+    pen.SetLineJoin(Gdiplus::LineJoinRound);
+
+    int width = rect.right - rect.left;
+    int height = rect.bottom - rect.top;
+    int lens = min(width, height) - 5;
+    if (lens < 6)
+        lens = min(width, height);
+
+    Gdiplus::RectF lens_rect((Gdiplus::REAL)rect.left + 1.5f,
+        (Gdiplus::REAL)rect.top + 1.0f,
+        (Gdiplus::REAL)lens,
+        (Gdiplus::REAL)lens);
+    graphics.DrawEllipse(&pen, lens_rect);
+
+    Gdiplus::PointF handle_start(lens_rect.GetRight() - 1.5f, lens_rect.GetBottom() - 1.5f);
+    Gdiplus::PointF handle_end((Gdiplus::REAL)rect.right - 1.5f, (Gdiplus::REAL)rect.bottom - 1.5f);
+    graphics.DrawLine(&pen, handle_start, handle_end);
 }
 
 static void DrawChevronRightPrimitive(HDC hdc, const RECT &rect, COLORREF color)
@@ -1747,6 +1858,131 @@ static String FormatRecentItemMeta(Entry *entry)
     return TEXT("Recent item");
 }
 
+static bool CompareStartMenuItemByTitle(const ModernStartMenuItem &left, const ModernStartMenuItem &right)
+{
+    return _tcsicmp(left._title.c_str(), right._title.c_str()) < 0;
+}
+
+static bool StringContainsInsensitive(const String &value, const String &needle_lower)
+{
+    if (needle_lower.empty())
+        return true;
+
+    String lower_value = value;
+    lower_value.toLower();
+    return lower_value.find(needle_lower) != String::npos;
+}
+
+static String EnsureTrailingBackslash(String path)
+{
+    if (!path.empty() && path.at(path.length() - 1) != TEXT('\\'))
+        path += TEXT("\\");
+
+    return path;
+}
+
+static String NormalizeSearchPath(String query)
+{
+    for (size_t index = 0; index < query.length(); ++index) {
+        if (query.at(index) == TEXT('/'))
+            query.at(index) = TEXT('\\');
+    }
+
+    if (query.length() == 2 && query.at(1) == TEXT(':'))
+        query += TEXT("\\");
+
+    return query;
+}
+
+static bool LooksLikePathQuery(const String &query)
+{
+    return query.find(TEXT(":\\")) != String::npos || query.find(TEXT("\\")) != String::npos || query.find(TEXT("/")) != String::npos;
+}
+
+static bool ResolvePathQueryParts(const String &query, String &base_dir, String &fragment)
+{
+    String normalized = NormalizeSearchPath(query);
+    if (normalized.empty())
+        return false;
+
+    if (PathFileExists(normalized.c_str()) && PathIsDirectory(normalized.c_str())) {
+        base_dir = EnsureTrailingBackslash(normalized);
+        fragment.erase();
+        return true;
+    }
+
+    size_t slash_pos = normalized.find_last_of(TEXT("\\"));
+    if (slash_pos == String::npos)
+        return false;
+
+    base_dir = normalized.substr(0, slash_pos + 1);
+    fragment = normalized.substr(slash_pos + 1);
+
+    return PathFileExists(base_dir.c_str()) && PathIsDirectory(base_dir.c_str()) != FALSE;
+}
+
+static bool SearchResultExists(const vector<ModernStartMenuItem> &items, const ModernStartMenuItem &candidate)
+{
+    for (size_t index = 0; index < items.size(); ++index) {
+        if (!candidate._path.empty()) {
+            if (!_tcsicmp(items[index]._path.c_str(), candidate._path.c_str()))
+                return true;
+        } else if (!_tcsicmp(items[index]._title.c_str(), candidate._title.c_str())) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool ModernStartMenuHasMeta(const vector<ModernStartMenuItem> &items, const String &meta_text)
+{
+    for (size_t index = 0; index < items.size(); ++index) {
+        if (!_tcsicmp(items[index]._meta_text.c_str(), meta_text.c_str()))
+            return true;
+    }
+
+    return false;
+}
+
+static bool TryGetEntryLaunchPath(Entry *entry, String &launch_path)
+{
+    TCHAR entry_path[MAX_PATH] = { 0 };
+    if (!entry || !entry->get_path(entry_path, COUNTOF(entry_path)) || !entry_path[0])
+        return false;
+
+    launch_path = entry_path;
+    if (PathMatchSpec(entry_path, TEXT("*.lnk"))) {
+        TCHAR target_path[MAX_PATH] = { 0 };
+        GetShortcutPath(entry_path, target_path, COUNTOF(target_path));
+        if (target_path[0])
+            launch_path = target_path;
+    }
+
+    return !launch_path.empty();
+}
+
+static bool IsExecutableLaunchPath(const String &launch_path)
+{
+    return !launch_path.empty() && PathMatchSpec(launch_path.c_str(), TEXT("*.exe"));
+}
+
+static bool TryGetRecentApplicationPath(Entry *entry, String &launch_path)
+{
+    return TryGetEntryLaunchPath(entry, launch_path) && IsExecutableLaunchPath(launch_path);
+}
+
+static ICON_ID GetPathQueryIconId(LPCTSTR path, DWORD file_attributes)
+{
+    if (file_attributes & FILE_ATTRIBUTE_DIRECTORY)
+        return ICID_FOLDER;
+
+    if (PathMatchSpec(path, TEXT("*.exe")) || PathMatchSpec(path, TEXT("*.lnk")))
+        return ICID_APP;
+
+    return ICID_SEARCH_DOC;
+}
+
 static Entry *GetPrimaryStartMenuEntry(const StartMenuEntry &entry)
 {
     Entry *fallback = NULL;
@@ -1799,12 +2035,12 @@ static RECT CalculateModernStartMenuRect()
 {
     int screen_width = GetSystemMetrics(SM_CXSCREEN);
     int screen_height = GetSystemMetrics(SM_CYSCREEN);
-    int width = min(DPI_SX(640), screen_width - DPI_SX(32));
-    int height = min(DPI_SY(690), screen_height - JCfg_GetDesktopBarHeightWithDPI() - DPI_SY(20));
+    int width = min(DPI_SX(660), screen_width - DPI_SX(32));
+    int height = min(DPI_SY(720), screen_height - JCfg_GetDesktopBarHeightWithDPI() - DPI_SY(20));
 
     if (width < DPI_SX(480))
         width = screen_width - DPI_SX(16);
-    if (height < DPI_SY(540))
+    if (height < DPI_SY(560))
         height = screen_height - JCfg_GetDesktopBarHeightWithDPI() - DPI_SY(10);
 
     int x = (screen_width - width) / 2;
@@ -1822,14 +2058,23 @@ StartMenuRoot::StartMenuRoot(HWND hwnd, const StartMenuRootCreateInfo &info)
        _panel_height(0),
        _program_icon_size(GetModernStartMenuMetrics()._program_icon_size),
        _recommended_icon_size(GetModernStartMenuMetrics()._recommended_icon_size),
+         _search_result_scroll(0),
+         _all_program_scroll(0),
+         _drive_folder_scroll(0),
+         _hwndSearchEdit(NULL),
+         _search_edit_brush(NULL),
+                 _search_edit_fill(CLR_INVALID),
        _show_all_programs(false),
+         _search_active(false),
        _hot_area(HOT_NONE),
        _hot_index(-1),
        _tracking_mouse(false),
        _title_font(NULL),
        _section_font(NULL),
+             _search_font(NULL),
        _item_font(NULL),
        _meta_font(NULL),
+         _search_query(),
        _user_name(GetModernStartMenuUserName())
 {
     if (!g_Globals._SHRestricted || !SHRestricted(REST_NOCOMMONGROUPS))
@@ -1848,10 +2093,14 @@ StartMenuRoot::StartMenuRoot(HWND hwnd, const StartMenuRootCreateInfo &info)
 
 StartMenuRoot::~StartMenuRoot()
 {
+    if (_search_edit_brush)
+        DeleteObject(_search_edit_brush);
     if (_title_font)
         DeleteObject(_title_font);
     if (_section_font)
         DeleteObject(_section_font);
+    if (_search_font)
+        DeleteObject(_search_font);
     if (_item_font)
         DeleteObject(_item_font);
     if (_meta_font)
@@ -1877,16 +2126,89 @@ HFONT StartMenuRoot::CreateMenuFont(int point_size, int weight) const
 
 int StartMenuRoot::GetVisibleProgramCount() const
 {
-    int max_count = _show_all_programs ? 18 : 12;
-    return min(max_count, (int)_program_items.size());
+    if (_show_all_programs || IsSearchResultsVisible() || IsSearchHomeVisible())
+        return 0;
+
+    return min(12, (int)_program_items.size());
 }
 
 int StartMenuRoot::GetVisibleRecommendedCount() const
 {
-    if (_show_all_programs)
+    if (_show_all_programs || IsSearchResultsVisible() || IsSearchHomeVisible())
         return 0;
 
     return min(6, (int)_recommended_items.size());
+}
+
+bool StartMenuRoot::IsSearchResultsVisible() const
+{
+    return !_search_query.empty();
+}
+
+bool StartMenuRoot::IsSearchHomeVisible() const
+{
+    return _search_active && _search_query.empty();
+}
+
+COLORREF StartMenuRoot::GetSearchFillColor() const
+{
+    return (_search_active || IsSearchResultsVisible()) ? RGB(46, 49, 54) : RGB(39, 42, 46);
+}
+
+int StartMenuRoot::GetVisibleAllProgramCount() const
+{
+    RECT list_rect = GetAllAppsListRect();
+    int row_height = DPI_SY(34);
+    int row_gap = DPI_SY(6);
+    int row_pitch = row_height + row_gap;
+    int available = list_rect.bottom - list_rect.top;
+    int count = row_pitch > 0 ? (available + row_gap) / row_pitch : 0;
+
+    return min(max(0, count), max(0, (int)_all_program_items.size() - _all_program_scroll));
+}
+
+int StartMenuRoot::GetVisibleDriveFolderCount() const
+{
+    RECT list_rect = GetDriveFoldersListRect();
+    int row_height = DPI_SY(34);
+    int row_gap = DPI_SY(6);
+    int row_pitch = row_height + row_gap;
+    int available = list_rect.bottom - list_rect.top;
+    int count = row_pitch > 0 ? (available + row_gap) / row_pitch : 0;
+
+    return min(max(0, count), max(0, (int)_drive_folder_items.size() - _drive_folder_scroll));
+}
+
+int StartMenuRoot::GetVisibleSearchResultCount() const
+{
+    RECT list_rect = GetSearchResultsRect();
+    int row_height = DPI_SY(52);
+    int row_gap = DPI_SY(6);
+    int row_pitch = row_height + row_gap;
+    int available = list_rect.bottom - list_rect.top;
+    int count = row_pitch > 0 ? (available + row_gap) / row_pitch : 0;
+
+    return min(max(0, count), max(0, (int)_search_results.size() - _search_result_scroll));
+}
+
+int StartMenuRoot::GetVisibleSearchHomeRecentCount() const
+{
+    RECT list_rect = GetSearchHomeRecentListRect();
+    int row_height = DPI_SY(40);
+    int row_gap = DPI_SY(8);
+    int row_pitch = row_height + row_gap;
+    int available = list_rect.bottom - list_rect.top;
+    int count = row_pitch > 0 ? (available + row_gap) / row_pitch : 0;
+
+    return min(max(0, count), (int)_search_recent_items.size());
+}
+
+int StartMenuRoot::GetVisibleSearchHomeTopAppCount() const
+{
+    if (!_all_program_items.empty())
+        return min(6, (int)_all_program_items.size());
+
+    return min(6, (int)_program_items.size());
 }
 
 RECT StartMenuRoot::GetSearchRect() const
@@ -1895,6 +2217,127 @@ RECT StartMenuRoot::GetSearchRect() const
     ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
     return MakeRectWH(metrics._outer_padding, metrics._outer_padding,
         client.right - metrics._outer_padding * 2, metrics._search_height);
+}
+
+RECT StartMenuRoot::GetSearchEditRect() const
+{
+    RECT search_rect = GetSearchRect();
+    int edit_height = DPI_SY(24);
+    int top = search_rect.top + max(0, ((search_rect.bottom - search_rect.top - edit_height) / 2));
+
+    return MakeRectWH(search_rect.left + DPI_SX(46),
+        top,
+        max(0, (search_rect.right - search_rect.left) - DPI_SX(60)),
+        edit_height);
+}
+
+RECT StartMenuRoot::GetSearchResultsRect() const
+{
+    ClientRect client(_hwnd);
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    RECT footer_rect = GetFooterRect();
+    RECT header_rect = GetProgramsHeaderRect();
+
+    return MakeRectWH(metrics._outer_padding,
+        header_rect.bottom + metrics._section_item_gap,
+        client.right - metrics._outer_padding * 2,
+        max(0, footer_rect.top - metrics._outer_padding - (header_rect.bottom + metrics._section_item_gap)));
+}
+
+RECT StartMenuRoot::GetSearchResultRect(int index) const
+{
+    RECT list_rect = GetSearchResultsRect();
+    int row_height = DPI_SY(52);
+    int row_gap = DPI_SY(6);
+    int visible_index = index - _search_result_scroll;
+
+    return MakeRectWH(list_rect.left,
+        list_rect.top + visible_index * (row_height + row_gap),
+        list_rect.right - list_rect.left,
+        row_height);
+}
+
+RECT StartMenuRoot::GetSearchHomeRecentHeaderRect() const
+{
+    ClientRect client(_hwnd);
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    RECT search_rect = GetSearchRect();
+    int column_gap = DPI_SX(18);
+    int content_width = client.right - metrics._outer_padding * 2;
+    int recent_width = max(DPI_SX(220), min(DPI_SX(250), (content_width - column_gap) * 36 / 100));
+
+    return MakeRectWH(metrics._outer_padding,
+        search_rect.bottom + metrics._section_gap,
+        recent_width,
+        metrics._section_button_height);
+}
+
+RECT StartMenuRoot::GetSearchHomeRecentListRect() const
+{
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    RECT footer_rect = GetFooterRect();
+    RECT header_rect = GetSearchHomeRecentHeaderRect();
+
+    return MakeRectWH(header_rect.left,
+        header_rect.bottom + metrics._section_item_gap,
+        header_rect.right - header_rect.left,
+        max(0, footer_rect.top - metrics._outer_padding - (header_rect.bottom + metrics._section_item_gap)));
+}
+
+RECT StartMenuRoot::GetSearchHomeRecentRowRect(int index) const
+{
+    RECT list_rect = GetSearchHomeRecentListRect();
+    int row_height = DPI_SY(40);
+    int row_gap = DPI_SY(8);
+
+    return MakeRectWH(list_rect.left,
+        list_rect.top + index * (row_height + row_gap),
+        list_rect.right - list_rect.left,
+        row_height);
+}
+
+RECT StartMenuRoot::GetSearchHomeTopAppsHeaderRect() const
+{
+    ClientRect client(_hwnd);
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    RECT recent_header_rect = GetSearchHomeRecentHeaderRect();
+    int column_gap = DPI_SX(18);
+
+    return MakeRectWH(recent_header_rect.right + column_gap,
+        recent_header_rect.top,
+        max(0, client.right - metrics._outer_padding - (recent_header_rect.right + column_gap)),
+        recent_header_rect.bottom - recent_header_rect.top);
+}
+
+RECT StartMenuRoot::GetSearchHomeTopAppsGridRect() const
+{
+    RECT header_rect = GetSearchHomeTopAppsHeaderRect();
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    int rows = (GetVisibleSearchHomeTopAppCount() + 2) / 3;
+    int tile_height = DPI_SY(90);
+    int tile_gap = DPI_SX(10);
+    int height = rows > 0 ? rows * tile_height + (rows - 1) * tile_gap : 0;
+
+    return MakeRectWH(header_rect.left,
+        header_rect.bottom + metrics._section_item_gap,
+        header_rect.right - header_rect.left,
+        height);
+}
+
+RECT StartMenuRoot::GetSearchHomeTopAppRect(int index) const
+{
+    RECT grid_rect = GetSearchHomeTopAppsGridRect();
+    int columns = 3;
+    int tile_gap = DPI_SX(10);
+    int tile_height = DPI_SY(90);
+    int tile_width = (grid_rect.right - grid_rect.left - tile_gap * (columns - 1)) / columns;
+    int row = index / columns;
+    int col = index % columns;
+
+    return MakeRectWH(grid_rect.left + col * (tile_width + tile_gap),
+        grid_rect.top + row * (tile_height + tile_gap),
+        tile_width,
+        tile_height);
 }
 
 RECT StartMenuRoot::GetProgramsHeaderRect() const
@@ -2006,18 +2449,78 @@ RECT StartMenuRoot::GetProfileRect() const
     ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
     return MakeRectWH(metrics._outer_padding,
         footer_rect.top,
-        footer_rect.right - metrics._outer_padding * 3 - metrics._power_size,
+        footer_rect.right - metrics._outer_padding * 2,
         footer_rect.bottom - footer_rect.top);
 }
 
-RECT StartMenuRoot::GetPowerRect() const
+RECT StartMenuRoot::GetAllAppsListRect() const
 {
-    RECT footer_rect = GetFooterRect();
+    ClientRect client(_hwnd);
     ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
-    return MakeRectWH(footer_rect.right - metrics._outer_padding - metrics._power_size,
-        footer_rect.top + ((footer_rect.bottom - footer_rect.top - metrics._power_size) / 2),
-        metrics._power_size,
-        metrics._power_size);
+    RECT footer_rect = GetFooterRect();
+    RECT header_rect = GetProgramsHeaderRect();
+    int top = header_rect.bottom + metrics._section_item_gap;
+    int available = footer_rect.top - top - metrics._section_gap - metrics._section_button_height - metrics._section_item_gap - metrics._outer_padding;
+    int height = max(DPI_SY(220), available * 2 / 3);
+    int max_height = max(0, available);
+    if (height > max_height)
+        height = max_height;
+
+    return MakeRectWH(metrics._outer_padding,
+        top,
+        client.right - metrics._outer_padding * 2,
+        max(0, height));
+}
+
+RECT StartMenuRoot::GetAllProgramRowRect(int index) const
+{
+    RECT list_rect = GetAllAppsListRect();
+    int row_height = DPI_SY(34);
+    int row_gap = DPI_SY(6);
+    int visible_index = index - _all_program_scroll;
+
+    return MakeRectWH(list_rect.left,
+        list_rect.top + visible_index * (row_height + row_gap),
+        list_rect.right - list_rect.left,
+        row_height);
+}
+
+RECT StartMenuRoot::GetDriveFoldersHeaderRect() const
+{
+    ClientRect client(_hwnd);
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    RECT apps_rect = GetAllAppsListRect();
+
+    return MakeRectWH(metrics._outer_padding,
+        apps_rect.bottom + metrics._section_gap,
+        client.right - metrics._outer_padding * 2,
+        metrics._section_button_height);
+}
+
+RECT StartMenuRoot::GetDriveFoldersListRect() const
+{
+    ClientRect client(_hwnd);
+    ModernStartMenuMetrics metrics = GetModernStartMenuMetrics();
+    RECT footer_rect = GetFooterRect();
+    RECT header_rect = GetDriveFoldersHeaderRect();
+
+    return MakeRectWH(metrics._outer_padding,
+        header_rect.bottom + metrics._section_item_gap,
+        client.right - metrics._outer_padding * 2,
+        max(0, footer_rect.top - metrics._outer_padding - (header_rect.bottom + metrics._section_item_gap)));
+}
+
+RECT StartMenuRoot::GetDriveFolderRowRect(int index) const
+{
+    RECT list_rect = GetDriveFoldersListRect();
+    int row_height = DPI_SY(34);
+    int row_gap = DPI_SY(6);
+    int visible_index = index - _drive_folder_scroll;
+
+    return MakeRectWH(list_rect.left,
+        list_rect.top + visible_index * (row_height + row_gap),
+        list_rect.right - list_rect.left,
+        row_height);
 }
 
 void StartMenuRoot::ApplyWindowRegion()
@@ -2037,6 +2540,47 @@ void StartMenuRoot::UpdatePlacement()
 
     SetWindowPos(_hwnd, HWND_TOP, rect.left, rect.top, _panel_width, _panel_height, SWP_NOACTIVATE);
     ApplyWindowRegion();
+    LayoutSearchEdit();
+}
+
+void StartMenuRoot::LayoutSearchEdit()
+{
+    if (!_hwndSearchEdit)
+        return;
+
+    RECT rect = GetSearchEditRect();
+    SetWindowPos(_hwndSearchEdit, HWND_TOP, rect.left, rect.top,
+        rect.right - rect.left, rect.bottom - rect.top,
+        SWP_NOACTIVATE | SWP_NOZORDER);
+}
+
+void StartMenuRoot::RefreshSearchEditBrush()
+{
+    COLORREF fill = GetSearchFillColor();
+    if (_search_edit_brush && fill == _search_edit_fill)
+        return;
+
+    if (_search_edit_brush)
+        DeleteObject(_search_edit_brush);
+
+    _search_edit_brush = CreateSolidBrush(fill);
+    _search_edit_fill = fill;
+
+    if (_hwndSearchEdit)
+        InvalidateRect(_hwndSearchEdit, NULL, FALSE);
+}
+
+void StartMenuRoot::SyncSearchEditText()
+{
+    if (!_hwndSearchEdit)
+        return;
+
+    TCHAR buffer[1024] = { 0 };
+    GetWindowText(_hwndSearchEdit, buffer, COUNTOF(buffer));
+    if (_tcscmp(buffer, _search_query.c_str())) {
+        SetWindowText(_hwndSearchEdit, _search_query.c_str());
+        SendMessage(_hwndSearchEdit, EM_SETSEL, _search_query.length(), _search_query.length());
+    }
 }
 
 void StartMenuRoot::AddFallbackProgramItems()
@@ -2086,8 +2630,12 @@ void StartMenuRoot::BuildProgramItems()
             continue;
 
         Entry *entry = GetPrimaryStartMenuEntry(it->second);
-        _program_items.push_back(ModernStartMenuItem(it->first, it->second._title, it->second._icon_id, entry, false));
+        ModernStartMenuItem item(it->first, it->second._title, it->second._icon_id, entry, false);
+        _program_items.push_back(item);
+        _all_program_items.push_back(item);
     }
+
+    std::sort(_all_program_items.begin(), _all_program_items.end(), CompareStartMenuItemByTitle);
 
     AddFallbackProgramItems();
 }
@@ -2129,16 +2677,99 @@ void StartMenuRoot::BuildRecommendedItems()
     }
 }
 
+void StartMenuRoot::BuildSearchRecentItems()
+{
+    for (StartMenuShellDirs::iterator it = _recent_dirs.begin(); it != _recent_dirs.end(); ++it) {
+        StartMenuDirectory &start_dir = *it;
+        ShellDirectory &dir = start_dir._dir;
+        int added = 0;
+
+        if (!dir._scanned) {
+            WaitCursor wait;
+            dir.smart_scan(SORT_NAME, SCAN_DONT_EXTRACT_ICONS);
+        }
+
+        dir.sort_directory(SORT_DATE);
+
+        for (Entry *entry = dir._down; entry && added < 10; entry = entry->_next) {
+            if (entry->_shell_attribs & SFGAO_HIDDEN)
+                continue;
+            if (entry->_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                continue;
+
+            String launch_path;
+            if (!TryGetRecentApplicationPath(entry, launch_path))
+                continue;
+            if (ModernStartMenuHasTitle(_search_recent_items, entry->_display_name) || ModernStartMenuHasMeta(_search_recent_items, launch_path))
+                continue;
+
+            if (entry->_icon_id == ICID_UNKNOWN)
+                entry->_icon_id = entry->safe_extract_icon(ICF_FROM_ICON_SIZE(DPI_SX(20)) | ICF_NOLINKOVERLAY);
+
+            _search_recent_items.push_back(ModernStartMenuItem(0,
+                entry->_display_name,
+                (ICON_ID)entry->_icon_id,
+                entry,
+                false,
+                launch_path.c_str()));
+            ++added;
+        }
+    }
+
+    if (_search_recent_items.empty()) {
+        for (size_t index = 0; index < _all_program_items.size() && _search_recent_items.size() < 8; ++index) {
+            ModernStartMenuItem item = _all_program_items[index];
+            item._meta_text = TEXT("Installed app");
+            _search_recent_items.push_back(item);
+        }
+    }
+}
+
+void StartMenuRoot::BuildDriveFolderItems()
+{
+    WIN32_FIND_DATA find_data;
+    HANDLE find_handle = FindFirstFile(TEXT("C:\\*"), &find_data);
+    if (find_handle == INVALID_HANDLE_VALUE)
+        return;
+
+    do {
+        if (!_tcscmp(find_data.cFileName, TEXT(".")) || !_tcscmp(find_data.cFileName, TEXT("..")))
+            continue;
+        if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+            continue;
+        if (find_data.dwFileAttributes & FILE_ATTRIBUTE_SYSTEM)
+            continue;
+
+        ModernStartMenuItem item(0, find_data.cFileName, ICID_FOLDER, NULL, false, TEXT("C:\\"));
+        item._path = String(TEXT("C:\\")) + find_data.cFileName;
+        item._autocomplete_text = EnsureTrailingBackslash(item._path);
+        _drive_folder_items.push_back(item);
+    } while (FindNextFile(find_handle, &find_data));
+
+    FindClose(find_handle);
+    std::sort(_drive_folder_items.begin(), _drive_folder_items.end(), CompareStartMenuItemByTitle);
+}
+
 void StartMenuRoot::RebuildModernContent()
 {
     _entries.clear();
     _program_items.clear();
+    _all_program_items.clear();
     _recommended_items.clear();
+    _drive_folder_items.clear();
+    _search_results.clear();
+    _search_recent_items.clear();
     _recent_dirs.clear();
     _next_id = IDC_FIRST_MENU;
+    _search_result_scroll = 0;
+    _all_program_scroll = 0;
+    _drive_folder_scroll = 0;
 
     BuildProgramItems();
     BuildRecommendedItems();
+    BuildSearchRecentItems();
+    BuildDriveFolderItems();
+    UpdateSearchResults();
 }
 
 void StartMenuRoot::EnsureItemIcon(ModernStartMenuItem &item, int icon_size)
@@ -2164,6 +2795,11 @@ bool StartMenuRoot::ExecuteItem(const ModernStartMenuItem &item)
         return true;
     }
 
+    if (!item._path.empty()) {
+        CloseStartMenu(item._id);
+        return launch_file(_hwnd, item._path.c_str()) ? true : false;
+    }
+
     ShellEntryMap::const_iterator found = _entries.find(item._id);
     if (found != _entries.end()) {
         ActivateEntry(item._id, found->second._entries);
@@ -2177,6 +2813,335 @@ bool StartMenuRoot::ExecuteItem(const ModernStartMenuItem &item)
     }
 
     return false;
+}
+
+bool StartMenuRoot::ExecuteSearchSelection()
+{
+    if (!IsSearchResultsVisible()) {
+        String normalized_query = NormalizeSearchPath(_search_query);
+        if (!normalized_query.empty() && PathFileExists(normalized_query.c_str())) {
+            CloseStartMenu();
+            return launch_file(_hwnd, normalized_query.c_str()) ? true : false;
+        }
+
+        return false;
+    }
+
+    if (_hot_area == HOT_SEARCH_RESULT && _hot_index >= 0 && _hot_index < (int)_search_results.size())
+        return ExecuteItem(_search_results[_hot_index]);
+
+    if (!_search_results.empty())
+        return ExecuteItem(_search_results[0]);
+
+    return false;
+}
+
+bool StartMenuRoot::AutocompleteSearchSelection()
+{
+    if (_hot_area != HOT_SEARCH_RESULT || _hot_index < 0 || _hot_index >= (int)_search_results.size())
+        return false;
+
+    const ModernStartMenuItem &item = _search_results[_hot_index];
+    if (item._autocomplete_text.empty())
+        return false;
+
+    SetSearchQuery(item._autocomplete_text);
+    return true;
+}
+
+void StartMenuRoot::UpdateSearchResults()
+{
+    _search_results.clear();
+    _search_result_scroll = 0;
+
+    if (_search_query.empty())
+        return;
+
+    bool path_query = LooksLikePathQuery(_search_query);
+    const int max_results = path_query ? 96 : 32;
+    String query_lower = _search_query;
+    query_lower.toLower();
+    String normalized_query = NormalizeSearchPath(_search_query);
+    bool query_path_exists = PathFileExists(normalized_query.c_str()) != FALSE;
+    bool query_is_directory = query_path_exists && PathIsDirectory(normalized_query.c_str()) != FALSE;
+
+    if (query_path_exists) {
+        String display_path = normalized_query;
+        while (display_path.length() > 3 && display_path.at(display_path.length() - 1) == TEXT('\\'))
+            display_path.erase(display_path.length() - 1);
+
+        String title = display_path;
+        size_t slash_pos = display_path.find_last_of(TEXT("\\"));
+        if (slash_pos != String::npos && slash_pos + 1 < display_path.length())
+            title = display_path.substr(slash_pos + 1);
+
+        ModernStartMenuItem path_item(0, title.c_str(), query_is_directory ? ICID_FOLDER : GetPathQueryIconId(normalized_query.c_str(), 0), NULL, false,
+            query_is_directory ? TEXT("Open folder") : TEXT("Open path"));
+        path_item._path = normalized_query;
+        path_item._autocomplete_text = query_is_directory ? EnsureTrailingBackslash(normalized_query) : normalized_query;
+        _search_results.push_back(path_item);
+    }
+
+    if (path_query) {
+        String base_dir;
+        String fragment;
+
+        if (ResolvePathQueryParts(_search_query, base_dir, fragment)) {
+            String fragment_lower = fragment;
+            fragment_lower.toLower();
+            String search_pattern = base_dir + TEXT("*");
+            WIN32_FIND_DATA find_data;
+            HANDLE find_handle = FindFirstFile(search_pattern.c_str(), &find_data);
+
+            if (find_handle != INVALID_HANDLE_VALUE) {
+                do {
+                    if (!_tcscmp(find_data.cFileName, TEXT(".")) || !_tcscmp(find_data.cFileName, TEXT("..")))
+                        continue;
+
+                    if (!fragment_lower.empty()) {
+                        String name_lower = find_data.cFileName;
+                        name_lower.toLower();
+                        if (name_lower.find(fragment_lower) != 0)
+                            continue;
+                    }
+
+                    bool is_directory = (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                    ModernStartMenuItem item(0, find_data.cFileName, GetPathQueryIconId(find_data.cFileName, find_data.dwFileAttributes), NULL, false, base_dir.c_str());
+                    item._path = base_dir + find_data.cFileName;
+                    item._autocomplete_text = is_directory ? EnsureTrailingBackslash(item._path) : item._path;
+
+                    if (!SearchResultExists(_search_results, item))
+                        _search_results.push_back(item);
+                } while ((int)_search_results.size() < max_results && FindNextFile(find_handle, &find_data));
+
+                FindClose(find_handle);
+            }
+        }
+
+        return;
+    }
+
+    for (size_t index = 0; index < _search_recent_items.size() && (int)_search_results.size() < max_results; ++index) {
+        ModernStartMenuItem item = _search_recent_items[index];
+        if (!StringContainsInsensitive(item._title, query_lower) && !StringContainsInsensitive(item._meta_text, query_lower))
+            continue;
+
+        item._autocomplete_text = item._title;
+        if (!SearchResultExists(_search_results, item))
+            _search_results.push_back(item);
+    }
+
+    for (size_t index = 0; index < _recommended_items.size() && (int)_search_results.size() < max_results; ++index) {
+        ModernStartMenuItem item = _recommended_items[index];
+        if (!StringContainsInsensitive(item._title, query_lower))
+            continue;
+
+        item._autocomplete_text = item._title;
+        if (!SearchResultExists(_search_results, item))
+            _search_results.push_back(item);
+    }
+
+    for (size_t index = 0; index < _all_program_items.size() && (int)_search_results.size() < max_results; ++index) {
+        ModernStartMenuItem item = _all_program_items[index];
+        if (!StringContainsInsensitive(item._title, query_lower))
+            continue;
+
+        item._meta_text = TEXT("Installed app");
+        item._autocomplete_text = item._title;
+        if (item._entry) {
+            TCHAR entry_path[MAX_PATH] = { 0 };
+            item._entry->get_path(entry_path, COUNTOF(entry_path));
+            if (entry_path[0])
+                item._meta_text = entry_path;
+        }
+
+        if (!SearchResultExists(_search_results, item))
+            _search_results.push_back(item);
+    }
+}
+
+void StartMenuRoot::SetSearchQuery(const String &query, bool sync_edit)
+{
+    _search_query = query;
+    _search_active = !_search_query.empty() || GetFocus() == _hwndSearchEdit;
+    if (_search_active)
+        _show_all_programs = false;
+    UpdateSearchResults();
+
+    if (IsSearchResultsVisible() && !_search_results.empty()) {
+        _hot_area = HOT_SEARCH_RESULT;
+        _hot_index = 0;
+    } else {
+        _hot_area = HOT_SEARCH;
+        _hot_index = -1;
+    }
+
+    if (sync_edit)
+        SyncSearchEditText();
+
+    RefreshSearchEditBrush();
+
+    InvalidateRect(_hwnd, NULL, FALSE);
+}
+
+bool StartMenuRoot::AdjustScrollOffset(int *offset, int item_count, int visible_count, int delta_lines)
+{
+    int max_offset = max(0, item_count - visible_count);
+    int new_offset = *offset + delta_lines;
+
+    if (new_offset < 0)
+        new_offset = 0;
+    if (new_offset > max_offset)
+        new_offset = max_offset;
+
+    if (new_offset == *offset)
+        return false;
+
+    *offset = new_offset;
+    return true;
+}
+
+bool StartMenuRoot::HandleMouseWheel(short wheel_delta, POINT screen_pt)
+{
+    POINT client_pt = screen_pt;
+    ScreenToClient(_hwnd, &client_pt);
+
+    UINT scroll_lines = 3;
+    SystemParametersInfo(SPI_GETWHEELSCROLLLINES, 0, &scroll_lines, 0);
+    int delta_lines = wheel_delta > 0 ? -(int)scroll_lines : (int)scroll_lines;
+    if (delta_lines == 0)
+        delta_lines = wheel_delta > 0 ? -1 : 1;
+
+    bool changed = false;
+
+    if (IsSearchResultsVisible()) {
+        changed = AdjustScrollOffset(&_search_result_scroll, (int)_search_results.size(), GetVisibleSearchResultCount(), delta_lines);
+    } else if (_show_all_programs) {
+        RECT apps_rect = GetAllAppsListRect();
+        RECT drive_rect = GetDriveFoldersListRect();
+        RECT header_rect = GetProgramsHeaderRect();
+
+        if (PtInRect(&drive_rect, client_pt))
+            changed = AdjustScrollOffset(&_drive_folder_scroll, (int)_drive_folder_items.size(), GetVisibleDriveFolderCount(), delta_lines);
+        else if (PtInRect(&apps_rect, client_pt) || PtInRect(&header_rect, client_pt))
+            changed = AdjustScrollOffset(&_all_program_scroll, (int)_all_program_items.size(), GetVisibleAllProgramCount(), delta_lines);
+    }
+
+    if (changed) {
+        ClearHotState();
+        InvalidateRect(_hwnd, NULL, FALSE);
+    }
+
+    return changed;
+}
+
+LRESULT StartMenuRoot::HandleSearchEditKeyDown(WPARAM wparam, LPARAM lparam)
+{
+    UNREFERENCED_PARAMETER(lparam);
+
+    if (wparam == VK_ESCAPE) {
+        CloseStartMenu();
+        return 0;
+    }
+
+    if (IsSearchHomeVisible()) {
+        if (wparam == VK_DOWN) {
+            if (GetVisibleSearchHomeRecentCount() > 0) {
+                if (_hot_area != HOT_SEARCH_HOME_RECENT)
+                    _hot_index = 0;
+                else if (_hot_index < GetVisibleSearchHomeRecentCount() - 1)
+                    ++_hot_index;
+
+                _hot_area = HOT_SEARCH_HOME_RECENT;
+                InvalidateRect(_hwnd, NULL, FALSE);
+            }
+            return 0;
+        }
+
+        if (wparam == VK_UP) {
+            if (GetVisibleSearchHomeRecentCount() > 0) {
+                if (_hot_area != HOT_SEARCH_HOME_RECENT)
+                    _hot_index = 0;
+                else if (_hot_index > 0)
+                    --_hot_index;
+
+                _hot_area = HOT_SEARCH_HOME_RECENT;
+                InvalidateRect(_hwnd, NULL, FALSE);
+            }
+            return 0;
+        }
+
+        if (wparam == VK_RETURN) {
+            if (_hot_area == HOT_SEARCH_HOME_RECENT && _hot_index >= 0 && _hot_index < GetVisibleSearchHomeRecentCount())
+                return ExecuteItem(_search_recent_items[_hot_index]) ? 0 : 1;
+            if (_hot_area == HOT_SEARCH_HOME_TOP_APP && _hot_index >= 0 && _hot_index < GetVisibleSearchHomeTopAppCount()) {
+                ModernStartMenuItem &item = !_all_program_items.empty() ? _all_program_items[_hot_index] : _program_items[_hot_index];
+                return ExecuteItem(item) ? 0 : 1;
+            }
+        }
+    }
+
+    if (IsSearchResultsVisible()) {
+        int visible_count = GetVisibleSearchResultCount();
+
+        if (wparam == VK_DOWN) {
+            if (!_search_results.empty()) {
+                if (_hot_area != HOT_SEARCH_RESULT)
+                    _hot_index = _search_result_scroll;
+                else if (_hot_index < (int)_search_results.size() - 1)
+                    ++_hot_index;
+
+                if (_hot_index >= _search_result_scroll + visible_count)
+                    ++_search_result_scroll;
+
+                _hot_area = HOT_SEARCH_RESULT;
+                InvalidateRect(_hwnd, NULL, FALSE);
+            }
+            return 0;
+        }
+
+        if (wparam == VK_UP) {
+            if (!_search_results.empty()) {
+                if (_hot_area != HOT_SEARCH_RESULT)
+                    _hot_index = _search_result_scroll;
+                else if (_hot_index > 0)
+                    --_hot_index;
+
+                if (_hot_index < _search_result_scroll)
+                    --_search_result_scroll;
+
+                _hot_area = HOT_SEARCH_RESULT;
+                InvalidateRect(_hwnd, NULL, FALSE);
+            }
+            return 0;
+        }
+
+        if (wparam == VK_NEXT) {
+            if (visible_count > 0 && AdjustScrollOffset(&_search_result_scroll, (int)_search_results.size(), visible_count, visible_count)) {
+                _hot_index = min((int)_search_results.size() - 1, _search_result_scroll);
+                _hot_area = HOT_SEARCH_RESULT;
+                InvalidateRect(_hwnd, NULL, FALSE);
+            }
+            return 0;
+        }
+
+        if (wparam == VK_PRIOR) {
+            if (visible_count > 0 && AdjustScrollOffset(&_search_result_scroll, (int)_search_results.size(), visible_count, -visible_count)) {
+                _hot_index = _search_result_scroll;
+                _hot_area = HOT_SEARCH_RESULT;
+                InvalidateRect(_hwnd, NULL, FALSE);
+            }
+            return 0;
+        }
+
+        if (wparam == VK_TAB && AutocompleteSearchSelection())
+            return 0;
+
+        if (wparam == VK_RETURN && ExecuteSearchSelection())
+            return 0;
+    }
+
+    return 1;
 }
 
 void StartMenuRoot::BeginMouseTrack()
@@ -2204,6 +3169,18 @@ RECT StartMenuRoot::GetHotRect(HOT_AREA area, int index) const
     switch (area) {
     case HOT_SEARCH:
         return GetSearchRect();
+    case HOT_SEARCH_RESULT:
+        if (index >= _search_result_scroll && index < _search_result_scroll + GetVisibleSearchResultCount())
+            return GetSearchResultRect(index);
+        break;
+    case HOT_SEARCH_HOME_RECENT:
+        if (index >= 0 && index < GetVisibleSearchHomeRecentCount())
+            return GetSearchHomeRecentRowRect(index);
+        break;
+    case HOT_SEARCH_HOME_TOP_APP:
+        if (index >= 0 && index < GetVisibleSearchHomeTopAppCount())
+            return GetSearchHomeTopAppRect(index);
+        break;
     case HOT_PROGRAMS_BUTTON:
         return GetProgramsButtonRect();
     case HOT_RECOMMENDED_BUTTON:
@@ -2216,10 +3193,16 @@ RECT StartMenuRoot::GetHotRect(HOT_AREA area, int index) const
         if (index >= 0 && index < GetVisibleRecommendedCount())
             return GetRecommendedTileRect(index);
         break;
+    case HOT_ALL_PROGRAM:
+        if (index >= _all_program_scroll && index < _all_program_scroll + GetVisibleAllProgramCount())
+            return GetAllProgramRowRect(index);
+        break;
+    case HOT_DRIVE_FOLDER:
+        if (index >= _drive_folder_scroll && index < _drive_folder_scroll + GetVisibleDriveFolderCount())
+            return GetDriveFolderRowRect(index);
+        break;
     case HOT_PROFILE:
         return GetProfileRect();
-    case HOT_POWER:
-        return GetPowerRect();
     default:
         break;
     }
@@ -2244,9 +3227,9 @@ bool StartMenuRoot::HitTest(POINT pt, HOT_AREA *area, int *index) const
     if (index)
         *index = -1;
 
-    RECT rect = GetPowerRect();
+    RECT rect = GetSearchRect();
     if (PtInRect(&rect, pt)) {
-        if (area) *area = HOT_POWER;
+        if (area) *area = HOT_SEARCH;
         return true;
     }
 
@@ -2256,10 +3239,67 @@ bool StartMenuRoot::HitTest(POINT pt, HOT_AREA *area, int *index) const
         return true;
     }
 
+    if (IsSearchHomeVisible()) {
+        for (int item_index = 0; item_index < GetVisibleSearchHomeRecentCount(); ++item_index) {
+            rect = GetSearchHomeRecentRowRect(item_index);
+            if (PtInRect(&rect, pt)) {
+                if (area) *area = HOT_SEARCH_HOME_RECENT;
+                if (index) *index = item_index;
+                return true;
+            }
+        }
+
+        for (int item_index = 0; item_index < GetVisibleSearchHomeTopAppCount(); ++item_index) {
+            rect = GetSearchHomeTopAppRect(item_index);
+            if (PtInRect(&rect, pt)) {
+                if (area) *area = HOT_SEARCH_HOME_TOP_APP;
+                if (index) *index = item_index;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    if (IsSearchResultsVisible()) {
+        for (int item_index = _search_result_scroll; item_index < _search_result_scroll + GetVisibleSearchResultCount(); ++item_index) {
+            rect = GetSearchResultRect(item_index);
+            if (PtInRect(&rect, pt)) {
+                if (area) *area = HOT_SEARCH_RESULT;
+                if (index) *index = item_index;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     rect = GetProgramsButtonRect();
     if (PtInRect(&rect, pt)) {
         if (area) *area = HOT_PROGRAMS_BUTTON;
         return true;
+    }
+
+    if (_show_all_programs) {
+        for (int item_index = _all_program_scroll; item_index < _all_program_scroll + GetVisibleAllProgramCount(); ++item_index) {
+            rect = GetAllProgramRowRect(item_index);
+            if (PtInRect(&rect, pt)) {
+                if (area) *area = HOT_ALL_PROGRAM;
+                if (index) *index = item_index;
+                return true;
+            }
+        }
+
+        for (int item_index = _drive_folder_scroll; item_index < _drive_folder_scroll + GetVisibleDriveFolderCount(); ++item_index) {
+            rect = GetDriveFolderRowRect(item_index);
+            if (PtInRect(&rect, pt)) {
+                if (area) *area = HOT_DRIVE_FOLDER;
+                if (index) *index = item_index;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     if (!_show_all_programs) {
@@ -2288,12 +3328,6 @@ bool StartMenuRoot::HitTest(POINT pt, HOT_AREA *area, int *index) const
         }
     }
 
-    rect = GetSearchRect();
-    if (PtInRect(&rect, pt)) {
-        if (area) *area = HOT_SEARCH;
-        return true;
-    }
-
     return false;
 }
 
@@ -2316,12 +3350,20 @@ void StartMenuRoot::UpdateHotState(POINT pt)
 
 int StartMenuRoot::Command(int id, int code)
 {
+    if (id == IDC_FILTER && code == EN_CHANGE) {
+        TCHAR buffer[1024] = { 0 };
+        GetWindowText(_hwndSearchEdit, buffer, COUNTOF(buffer));
+        SetSearchQuery(buffer, false);
+        return 0;
+    }
+
     switch (id) {
     case IDC_PROGRAMS:
         _show_all_programs = !_show_all_programs;
-        _hot_area = HOT_NONE;
-        _hot_index = -1;
-        InvalidateRect(_hwnd, NULL, FALSE);
+        SetSearchQuery(TEXT(""));
+        _all_program_scroll = 0;
+        _drive_folder_scroll = 0;
+        RefreshSearchEditBrush();
         return 0;
 
     case IDC_RECENT:
@@ -2339,8 +3381,14 @@ int StartMenuRoot::Command(int id, int code)
         return 0;
 
     case IDC_SEARCH:
-        CloseStartMenu(id);
-        ShowSearchDialog();
+        _search_active = true;
+        _show_all_programs = false;
+        _hot_area = HOT_SEARCH;
+        _hot_index = -1;
+        RefreshSearchEditBrush();
+        if (_hwndSearchEdit)
+            SetFocus(_hwndSearchEdit);
+        InvalidateRect(_hwnd, NULL, FALSE);
         return 0;
 
     default: {
@@ -2358,10 +3406,27 @@ int StartMenuRoot::Command(int id, int code)
 
 LRESULT StartMenuRoot::Init(LPCREATESTRUCT pcs)
 {
-    _title_font = CreateMenuFont(20, FW_SEMIBOLD);
-    _section_font = CreateMenuFont(11, FW_SEMIBOLD);
-    _item_font = CreateMenuFont(9, FW_NORMAL);
-    _meta_font = CreateMenuFont(8, FW_NORMAL);
+    UNREFERENCED_PARAMETER(pcs);
+
+    _title_font = CreateMenuFont(22, FW_SEMIBOLD);
+    _section_font = CreateMenuFont(12, FW_SEMIBOLD);
+    _search_font = CreateMenuFont(11, FW_NORMAL);
+    _item_font = CreateMenuFont(10, FW_NORMAL);
+    _meta_font = CreateMenuFont(9, FW_NORMAL);
+
+    _hwndSearchEdit = CreateWindowEx(0, WC_EDIT, TEXT(""),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        0, 0, 0, 0,
+        _hwnd, (HMENU)IDC_FILTER, g_Globals._hInstance, NULL);
+    if (_hwndSearchEdit) {
+        new StartMenuSearchEdit(_hwndSearchEdit, _hwnd);
+        SetWindowTheme(_hwndSearchEdit, L"", L"");
+        SendMessage(_hwndSearchEdit, WM_SETFONT, (WPARAM)(_search_font ? _search_font : g_Globals._hDefaultFont), FALSE);
+        SendMessage(_hwndSearchEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELONG(0, 0));
+        SendMessage(_hwndSearchEdit, EM_SETCUEBANNER, FALSE, (LPARAM)TEXT("Search for apps, settings, and documents"));
+    }
+
+    RefreshSearchEditBrush();
 
     RebuildModernContent();
     UpdatePlacement();
@@ -2374,6 +3439,9 @@ void StartMenuRoot::TrackStartmenu()
     HWND hwnd = _hwnd;
 
     _show_all_programs = false;
+    _all_program_scroll = 0;
+    _drive_folder_scroll = 0;
+    SetSearchQuery(TEXT(""));
     ClearHotState();
     RebuildModernContent();
     UpdatePlacement();
@@ -2382,6 +3450,8 @@ void StartMenuRoot::TrackStartmenu()
     SetForegroundWindow(hwnd);
     SetActiveWindow(hwnd);
     SetFocus(hwnd);
+    _search_active = false;
+    RefreshSearchEditBrush();
 
     while (IsWindow(hwnd) && IsWindowVisible(hwnd)) {
         if (!GetMessage(&msg, 0, 0, 0)) {
@@ -2428,6 +3498,21 @@ void StartMenuRoot::TrackStartmenu()
 LRESULT StartMenuRoot::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
 {
     switch (nmsg) {
+    case PM_STARTMENU_SEARCH_KEYDOWN:
+        return HandleSearchEditKeyDown(wparam, lparam);
+
+    case PM_STARTMENU_SEARCH_WHEEL:
+        return HandleMouseWheel(GET_WHEEL_DELTA_WPARAM(wparam), Point(lparam)) ? 0 : 1;
+
+    case PM_STARTMENU_SEARCH_FOCUS:
+        _search_active = true;
+        _show_all_programs = false;
+        _hot_area = HOT_SEARCH;
+        _hot_index = -1;
+        RefreshSearchEditBrush();
+        InvalidateRect(_hwnd, NULL, FALSE);
+        return 0;
+
     case WM_ERASEBKGND:
         return 1;
 
@@ -2441,6 +3526,7 @@ LRESULT StartMenuRoot::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
         _panel_width = LOWORD(lparam);
         _panel_height = HIWORD(lparam);
         ApplyWindowRegion();
+        LayoutSearchEdit();
         return 0;
 
     case WM_DISPLAYCHANGE:
@@ -2458,8 +3544,29 @@ LRESULT StartMenuRoot::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
         return 0;
 
     case WM_LBUTTONDOWN:
-        SetFocus(_hwnd);
+        {
+            RECT search_rect = GetSearchRect();
+            if (_hwndSearchEdit && PtInRect(&search_rect, Point(lparam)))
+                SetFocus(_hwndSearchEdit);
+            else
+                SetFocus(_hwnd);
+        }
         return 0;
+
+    case WM_MOUSEWHEEL:
+        if (HandleMouseWheel(GET_WHEEL_DELTA_WPARAM(wparam), Point(lparam)))
+            return 0;
+        break;
+
+    case WM_CTLCOLOREDIT:
+        if ((HWND)lparam == _hwndSearchEdit) {
+            COLORREF search_fill = GetSearchFillColor();
+            SetBkMode((HDC)wparam, OPAQUE);
+            SetTextColor((HDC)wparam, RGB(238, 241, 244));
+            SetBkColor((HDC)wparam, search_fill);
+            return (LRESULT)_search_edit_brush;
+        }
+        break;
 
     case WM_LBUTTONUP: {
         HOT_AREA hot_area = HOT_NONE;
@@ -2468,7 +3575,29 @@ LRESULT StartMenuRoot::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
 
         switch (hot_area) {
         case HOT_SEARCH:
+            if (_hwndSearchEdit)
+                SetFocus(_hwndSearchEdit);
             Command(IDC_SEARCH, BN_CLICKED);
+            break;
+
+        case HOT_SEARCH_RESULT:
+            if (hot_index >= 0 && hot_index < (int)_search_results.size()) {
+                _hot_area = HOT_SEARCH_RESULT;
+                _hot_index = hot_index;
+                ExecuteSearchSelection();
+            }
+            break;
+
+        case HOT_SEARCH_HOME_RECENT:
+            if (hot_index >= 0 && hot_index < GetVisibleSearchHomeRecentCount())
+                ExecuteItem(_search_recent_items[hot_index]);
+            break;
+
+        case HOT_SEARCH_HOME_TOP_APP:
+            if (hot_index >= 0 && hot_index < GetVisibleSearchHomeTopAppCount()) {
+                ModernStartMenuItem &item = !_all_program_items.empty() ? _all_program_items[hot_index] : _program_items[hot_index];
+                ExecuteItem(item);
+            }
             break;
 
         case HOT_PROGRAMS_BUTTON:
@@ -2489,16 +3618,22 @@ LRESULT StartMenuRoot::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
                 ExecuteItem(_recommended_items[hot_index]);
             break;
 
+        case HOT_ALL_PROGRAM:
+            if (hot_index >= 0 && hot_index < (int)_all_program_items.size())
+                ExecuteItem(_all_program_items[hot_index]);
+            break;
+
+        case HOT_DRIVE_FOLDER:
+            if (hot_index >= 0 && hot_index < (int)_drive_folder_items.size())
+                ExecuteItem(_drive_folder_items[hot_index]);
+            break;
+
         case HOT_PROFILE:
             CloseStartMenu();
             try {
                 launch_file(_hwnd, SpecialFolderFSPath(CSIDL_PERSONAL, _hwnd));
             } catch (COMException &) {
             }
-            break;
-
-        case HOT_POWER:
-            Command(IDC_SHUTDOWN, BN_CLICKED);
             break;
 
         default:
@@ -2508,10 +3643,48 @@ LRESULT StartMenuRoot::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
     }
 
     case WM_KEYDOWN:
+        if (GetFocus() == _hwndSearchEdit)
+            return 0;
+
         if (wparam == VK_ESCAPE) {
             CloseStartMenu();
             return 0;
         }
+
+        if (IsSearchResultsVisible()) {
+            if (wparam == VK_DOWN) {
+                if (!_search_results.empty()) {
+                    if (_hot_area != HOT_SEARCH_RESULT)
+                        _hot_index = 0;
+                    else if (_hot_index < (int)_search_results.size() - 1)
+                        ++_hot_index;
+
+                    _hot_area = HOT_SEARCH_RESULT;
+                    InvalidateRect(_hwnd, NULL, FALSE);
+                }
+                return 0;
+            }
+
+            if (wparam == VK_UP) {
+                if (!_search_results.empty()) {
+                    if (_hot_area != HOT_SEARCH_RESULT)
+                        _hot_index = 0;
+                    else if (_hot_index > 0)
+                        --_hot_index;
+
+                    _hot_area = HOT_SEARCH_RESULT;
+                    InvalidateRect(_hwnd, NULL, FALSE);
+                }
+                return 0;
+            }
+
+            if (wparam == VK_TAB && AutocompleteSearchSelection())
+                return 0;
+
+            if (wparam == VK_RETURN && ExecuteSearchSelection())
+                return 0;
+        }
+
         if (wparam == VK_RETURN) {
             switch (_hot_area) {
             case HOT_SEARCH:
@@ -2531,12 +3704,59 @@ LRESULT StartMenuRoot::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
                 if (_hot_index >= 0 && _hot_index < (int)_recommended_items.size())
                     ExecuteItem(_recommended_items[_hot_index]);
                 return 0;
-            case HOT_POWER:
-                Command(IDC_SHUTDOWN, BN_CLICKED);
+
+            case HOT_SEARCH_HOME_RECENT:
+                if (_hot_index >= 0 && _hot_index < GetVisibleSearchHomeRecentCount())
+                    ExecuteItem(_search_recent_items[_hot_index]);
                 return 0;
+
+            case HOT_SEARCH_HOME_TOP_APP:
+                if (_hot_index >= 0 && _hot_index < GetVisibleSearchHomeTopAppCount()) {
+                    ModernStartMenuItem &item = !_all_program_items.empty() ? _all_program_items[_hot_index] : _program_items[_hot_index];
+                    ExecuteItem(item);
+                }
+                return 0;
+
+            case HOT_ALL_PROGRAM:
+                if (_hot_index >= 0 && _hot_index < (int)_all_program_items.size())
+                    ExecuteItem(_all_program_items[_hot_index]);
+                return 0;
+
+            case HOT_DRIVE_FOLDER:
+                if (_hot_index >= 0 && _hot_index < (int)_drive_folder_items.size())
+                    ExecuteItem(_drive_folder_items[_hot_index]);
+                return 0;
+
             default:
                 break;
             }
+        }
+        return 0;
+
+    case WM_CHAR:
+        if (GetFocus() == _hwndSearchEdit)
+            return 0;
+
+        if (GetKeyState(VK_CONTROL) < 0 || GetKeyState(VK_MENU) < 0)
+            return 0;
+
+        if (wparam == VK_BACK) {
+            if (!_search_query.empty()) {
+                String next_query = _search_query.substr(0, _search_query.length() - 1);
+                SetSearchQuery(next_query);
+            }
+            return 0;
+        }
+
+        if (wparam >= 32) {
+            String next_query = _search_query;
+            next_query += (TCHAR)wparam;
+            _search_active = true;
+            _show_all_programs = false;
+            if (_hwndSearchEdit)
+                SetFocus(_hwndSearchEdit);
+            SetSearchQuery(next_query);
+            return 0;
         }
         return 0;
 
@@ -2565,8 +3785,10 @@ void StartMenuRoot::Paint(HDC canvas)
     COLORREF section_text = RGB(244, 246, 248);
     COLORREF item_text = RGB(238, 241, 244);
     COLORREF meta_text = RGB(173, 177, 182);
-    COLORREF search_fill = _hot_area == HOT_SEARCH ? RGB(55, 59, 65) : RGB(45, 48, 53);
-    COLORREF search_border = _hot_area == HOT_SEARCH ? RGB(108, 133, 168) : RGB(90, 95, 101);
+    bool search_highlight = _search_active || IsSearchResultsVisible();
+    COLORREF search_fill = GetSearchFillColor();
+    COLORREF search_border = search_highlight ? RGB(85, 101, 123) : RGB(61, 65, 71);
+    COLORREF search_icon = search_highlight ? RGB(70, 168, 231) : RGB(167, 172, 178);
     COLORREF action_fill = RGB(78, 82, 88);
     COLORREF action_hover_fill = RGB(94, 98, 104);
     COLORREF action_border = RGB(98, 102, 108);
@@ -2577,93 +3799,318 @@ void StartMenuRoot::Paint(HDC canvas)
     COLORREF footer_fill = RGB(43, 46, 50);
     COLORREF footer_border = RGB(82, 86, 91);
     COLORREF profile_hover_fill = RGB(60, 64, 69);
-    COLORREF power_fill = _hot_area == HOT_POWER ? RGB(86, 90, 96) : RGB(63, 67, 72);
-    COLORREF power_border = _hot_area == HOT_POWER ? RGB(109, 113, 119) : RGB(84, 88, 94);
+    COLORREF list_fill = RGB(44, 47, 52);
+    COLORREF list_hover_fill = RGB(61, 65, 71);
+    COLORREF list_border = RGB(57, 61, 66);
 
     FillRoundedRectPrimitive(canvas, client_rect, panel_color, metrics._corner_radius, border_color);
 
     RECT search_rect = GetSearchRect();
     FillRoundedRectPrimitive(canvas, search_rect, search_fill, DPI_SX(20), search_border);
 
-    HBRUSH search_brush = CreateSolidBrush(search_fill);
-    g_Globals._icon_cache.get_icon(ICID_SEARCH).draw(canvas,
-        search_rect.left + DPI_SX(14),
+    RECT search_icon_rect = MakeRectWH(search_rect.left + DPI_SX(14),
         search_rect.top + ((search_rect.bottom - search_rect.top - metrics._search_icon_size) / 2),
         metrics._search_icon_size,
-        metrics._search_icon_size,
-        search_fill,
-        search_brush);
-    DeleteObject(search_brush);
+        metrics._search_icon_size);
+    DrawSearchGlyphPrimitive(canvas, search_icon_rect, search_icon);
 
     HFONT old_font = (HFONT)SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
     int old_bk_mode = SetBkMode(canvas, TRANSPARENT);
     COLORREF old_text_color = SetTextColor(canvas, RGB(171, 176, 182));
-    RECT search_text_rect = search_rect;
-    search_text_rect.left += DPI_SX(42);
-    DrawText(canvas, TEXT("Search for apps, settings, and documents"), -1, &search_text_rect,
-        DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+    if (!_hwndSearchEdit) {
+        RECT search_text_rect = search_rect;
+        search_text_rect.left += DPI_SX(42);
+        DrawText(canvas, _search_query.empty() ? TEXT("Search for apps, settings, and documents") : _search_query.c_str(), -1, &search_text_rect,
+            DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+    }
 
     RECT programs_header_rect = GetProgramsHeaderRect();
     SelectObject(canvas, _section_font ? _section_font : g_Globals._hDefaultFont);
     SetTextColor(canvas, section_text);
-    DrawText(canvas, _show_all_programs ? TEXT("All Apps") : TEXT("Pinned"), -1, &programs_header_rect,
-        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
-    RECT programs_button_rect = GetProgramsButtonRect();
-    FillRoundedRectPrimitive(canvas, programs_button_rect,
-        _hot_area == HOT_PROGRAMS_BUTTON ? action_hover_fill : action_fill,
-        DPI_SX(12), action_border);
-    RECT programs_button_text_rect = programs_button_rect;
-    programs_button_text_rect.left += DPI_SX(12);
-    programs_button_text_rect.right -= DPI_SX(18);
-    SetTextColor(canvas, RGB(236, 239, 242));
-    DrawText(canvas, _show_all_programs ? TEXT("Pinned") : TEXT("All"), -1, &programs_button_text_rect,
-        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    DrawChevronRightPrimitive(canvas,
-        MakeRectWH(programs_button_rect.right - DPI_SX(16), programs_button_rect.top, DPI_SX(10), programs_button_rect.bottom - programs_button_rect.top),
-        RGB(236, 239, 242));
+    if (IsSearchResultsVisible()) {
+        DrawText(canvas, TEXT("Results"), -1, &programs_header_rect,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
-    for (int index = 0; index < GetVisibleProgramCount(); ++index) {
-        RECT item_rect = GetProgramTileRect(index);
-        ModernStartMenuItem &item = _program_items[index];
-        EnsureItemIcon(item, _program_icon_size);
+        for (int index = _search_result_scroll; index < _search_result_scroll + GetVisibleSearchResultCount(); ++index) {
+            RECT item_rect = GetSearchResultRect(index);
+            ModernStartMenuItem &item = _search_results[index];
+            EnsureItemIcon(item, DPI_SX(20));
 
-        bool is_hot = _hot_area == HOT_PROGRAM && _hot_index == index;
-        COLORREF tile_color = is_hot ? program_hover_fill : panel_color;
-        if (is_hot)
-            FillRoundedRectPrimitive(canvas, item_rect, tile_color, DPI_SX(14));
+            COLORREF tile_color = (_hot_area == HOT_SEARCH_RESULT && _hot_index == index) ? list_hover_fill : list_fill;
+            FillRoundedRectPrimitive(canvas, item_rect, tile_color, DPI_SX(12), list_border);
 
-        HBRUSH tile_brush = CreateSolidBrush(tile_color);
-        int icon_left = item_rect.left + ((item_rect.right - item_rect.left - _program_icon_size) / 2);
-        int icon_top = item_rect.top + DPI_SY(8);
-        g_Globals._icon_cache.get_icon(item._icon_id).draw(canvas, icon_left, icon_top,
-            _program_icon_size, _program_icon_size, tile_color, tile_brush);
-        DeleteObject(tile_brush);
+            HBRUSH tile_brush = CreateSolidBrush(tile_color);
+            int icon_left = item_rect.left + DPI_SX(14);
+            int icon_top = item_rect.top + ((item_rect.bottom - item_rect.top - DPI_SX(20)) / 2);
+            g_Globals._icon_cache.get_icon(item._icon_id).draw(canvas, icon_left, icon_top,
+                DPI_SX(20), DPI_SX(20), tile_color, tile_brush);
+            DeleteObject(tile_brush);
 
-        RECT text_rect = item_rect;
-        text_rect.top = icon_top + _program_icon_size + DPI_SY(8);
-        text_rect.left += DPI_SX(6);
-        text_rect.right -= DPI_SX(6);
-        text_rect.bottom -= DPI_SY(8);
-        SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
-        SetTextColor(canvas, item_text);
-        DrawText(canvas, item._title.c_str(), -1, &text_rect,
-            DT_CENTER | DT_TOP | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
-    }
+            RECT title_rect = item_rect;
+            title_rect.left += DPI_SX(46);
+            title_rect.top += DPI_SY(8);
+            title_rect.right -= DPI_SX(12);
+            title_rect.bottom = title_rect.top + DPI_SY(18);
+            SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, item_text);
+            DrawText(canvas, item._title.c_str(), -1, &title_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
 
-    if (GetVisibleProgramCount() == 0) {
-        RECT empty_rect = GetProgramsGridRect();
-        SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
-        SetTextColor(canvas, meta_text);
-        DrawText(canvas, TEXT("No applications found."), -1, &empty_rect,
-            DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
-    }
+            RECT meta_rect = item_rect;
+            meta_rect.left += DPI_SX(46);
+            meta_rect.top += DPI_SY(28);
+            meta_rect.right -= DPI_SX(12);
+            SelectObject(canvas, _meta_font ? _meta_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, meta_text);
+            DrawText(canvas, item._meta_text.empty() ? TEXT("Suggestion") : item._meta_text.c_str(), -1, &meta_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        }
 
-    if (!_show_all_programs) {
+        if (GetVisibleSearchResultCount() == 0) {
+            RECT empty_rect = GetSearchResultsRect();
+            SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, meta_text);
+            DrawText(canvas, TEXT("No matches found."), -1, &empty_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+        }
+    } else if (IsSearchHomeVisible()) {
+        RECT recent_header_rect = GetSearchHomeRecentHeaderRect();
+        DrawText(canvas, TEXT("Recent apps"), -1, &recent_header_rect,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        for (int index = 0; index < GetVisibleSearchHomeRecentCount(); ++index) {
+            RECT item_rect = GetSearchHomeRecentRowRect(index);
+            ModernStartMenuItem &item = _search_recent_items[index];
+            EnsureItemIcon(item, DPI_SX(20));
+
+            COLORREF tile_color = (_hot_area == HOT_SEARCH_HOME_RECENT && _hot_index == index) ? list_hover_fill : panel_color;
+            if (_hot_area == HOT_SEARCH_HOME_RECENT && _hot_index == index)
+                FillRoundedRectPrimitive(canvas, item_rect, tile_color, DPI_SX(12));
+
+            HBRUSH tile_brush = CreateSolidBrush(tile_color);
+            int icon_left = item_rect.left + DPI_SX(6);
+            int icon_top = item_rect.top + ((item_rect.bottom - item_rect.top - DPI_SX(20)) / 2);
+            g_Globals._icon_cache.get_icon(item._icon_id).draw(canvas, icon_left, icon_top,
+                DPI_SX(20), DPI_SX(20), tile_color, tile_brush);
+            DeleteObject(tile_brush);
+
+            RECT title_rect = item_rect;
+            title_rect.left += DPI_SX(36);
+            title_rect.top += DPI_SY(3);
+            title_rect.right -= DPI_SX(6);
+            title_rect.bottom = title_rect.top + DPI_SY(18);
+            SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, item_text);
+            DrawText(canvas, item._title.c_str(), -1, &title_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+            RECT meta_rect = item_rect;
+            meta_rect.left += DPI_SX(36);
+            meta_rect.top += DPI_SY(21);
+            meta_rect.right -= DPI_SX(6);
+            SelectObject(canvas, _meta_font ? _meta_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, meta_text);
+            DrawText(canvas, item._meta_text.empty() ? TEXT("Recent app") : item._meta_text.c_str(), -1, &meta_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        }
+
+        if (GetVisibleSearchHomeRecentCount() == 0) {
+            RECT empty_rect = GetSearchHomeRecentListRect();
+            SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, meta_text);
+            DrawText(canvas, TEXT("No recent apps yet."), -1, &empty_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+        }
+
+        RECT top_apps_header_rect = GetSearchHomeTopAppsHeaderRect();
+        SelectObject(canvas, _section_font ? _section_font : g_Globals._hDefaultFont);
+        SetTextColor(canvas, section_text);
+        DrawText(canvas, TEXT("Top apps"), -1, &top_apps_header_rect,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        for (int index = 0; index < GetVisibleSearchHomeTopAppCount(); ++index) {
+            RECT item_rect = GetSearchHomeTopAppRect(index);
+            ModernStartMenuItem &item = !_all_program_items.empty() ? _all_program_items[index] : _program_items[index];
+            EnsureItemIcon(item, DPI_SX(24));
+
+            COLORREF tile_color = (_hot_area == HOT_SEARCH_HOME_TOP_APP && _hot_index == index) ? recommended_hover_fill : recommended_fill;
+            FillRoundedRectPrimitive(canvas, item_rect, tile_color, DPI_SX(12), recommended_border);
+
+            HBRUSH tile_brush = CreateSolidBrush(tile_color);
+            int icon_left = item_rect.left + ((item_rect.right - item_rect.left - DPI_SX(24)) / 2);
+            int icon_top = item_rect.top + DPI_SY(14);
+            g_Globals._icon_cache.get_icon(item._icon_id).draw(canvas, icon_left, icon_top,
+                DPI_SX(24), DPI_SX(24), tile_color, tile_brush);
+            DeleteObject(tile_brush);
+
+            RECT text_rect = item_rect;
+            text_rect.top = icon_top + DPI_SX(24) + DPI_SY(10);
+            text_rect.left += DPI_SX(10);
+            text_rect.right -= DPI_SX(10);
+            text_rect.bottom -= DPI_SY(10);
+            SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, item_text);
+            DrawText(canvas, item._title.c_str(), -1, &text_rect,
+                DT_CENTER | DT_TOP | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+        }
+    } else if (_show_all_programs) {
+        DrawText(canvas, TEXT("Installed apps"), -1, &programs_header_rect,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        RECT programs_button_rect = GetProgramsButtonRect();
+        FillRoundedRectPrimitive(canvas, programs_button_rect,
+            _hot_area == HOT_PROGRAMS_BUTTON ? action_hover_fill : action_fill,
+            DPI_SX(12), action_border);
+        RECT programs_button_text_rect = programs_button_rect;
+        programs_button_text_rect.left += DPI_SX(12);
+        programs_button_text_rect.right -= DPI_SX(18);
+        SelectObject(canvas, _meta_font ? _meta_font : g_Globals._hDefaultFont);
+        SetTextColor(canvas, RGB(236, 239, 242));
+        DrawText(canvas, TEXT("Pinned"), -1, &programs_button_text_rect,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        DrawChevronRightPrimitive(canvas,
+            MakeRectWH(programs_button_rect.right - DPI_SX(16), programs_button_rect.top, DPI_SX(10), programs_button_rect.bottom - programs_button_rect.top),
+            RGB(236, 239, 242));
+
+        for (int index = _all_program_scroll; index < _all_program_scroll + GetVisibleAllProgramCount(); ++index) {
+            RECT item_rect = GetAllProgramRowRect(index);
+            ModernStartMenuItem &item = _all_program_items[index];
+            EnsureItemIcon(item, DPI_SX(18));
+
+            COLORREF tile_color = (_hot_area == HOT_ALL_PROGRAM && _hot_index == index) ? list_hover_fill : list_fill;
+            FillRoundedRectPrimitive(canvas, item_rect, tile_color, DPI_SX(10), list_border);
+
+            HBRUSH tile_brush = CreateSolidBrush(tile_color);
+            int icon_left = item_rect.left + DPI_SX(12);
+            int icon_top = item_rect.top + ((item_rect.bottom - item_rect.top - DPI_SX(18)) / 2);
+            g_Globals._icon_cache.get_icon(item._icon_id).draw(canvas, icon_left, icon_top,
+                DPI_SX(18), DPI_SX(18), tile_color, tile_brush);
+            DeleteObject(tile_brush);
+
+            RECT title_rect = item_rect;
+            title_rect.left += DPI_SX(42);
+            title_rect.right -= DPI_SX(10);
+            SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, item_text);
+            DrawText(canvas, item._title.c_str(), -1, &title_rect,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        }
+
+        if (GetVisibleAllProgramCount() == 0) {
+            RECT empty_rect = GetAllAppsListRect();
+            SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, meta_text);
+            DrawText(canvas, TEXT("No installed apps found."), -1, &empty_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+        }
+
+        RECT drive_header_rect = GetDriveFoldersHeaderRect();
+        SelectObject(canvas, _section_font ? _section_font : g_Globals._hDefaultFont);
+        SetTextColor(canvas, section_text);
+        DrawText(canvas, TEXT("Folders in C:\\"), -1, &drive_header_rect,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        for (int index = _drive_folder_scroll; index < _drive_folder_scroll + GetVisibleDriveFolderCount(); ++index) {
+            RECT item_rect = GetDriveFolderRowRect(index);
+            ModernStartMenuItem &item = _drive_folder_items[index];
+
+            COLORREF tile_color = (_hot_area == HOT_DRIVE_FOLDER && _hot_index == index) ? list_hover_fill : list_fill;
+            FillRoundedRectPrimitive(canvas, item_rect, tile_color, DPI_SX(10), list_border);
+
+            HBRUSH tile_brush = CreateSolidBrush(tile_color);
+            int icon_left = item_rect.left + DPI_SX(12);
+            int icon_top = item_rect.top + ((item_rect.bottom - item_rect.top - DPI_SX(18)) / 2);
+            g_Globals._icon_cache.get_icon(item._icon_id).draw(canvas, icon_left, icon_top,
+                DPI_SX(18), DPI_SX(18), tile_color, tile_brush);
+            DeleteObject(tile_brush);
+
+            RECT title_rect = item_rect;
+            title_rect.left += DPI_SX(42);
+            title_rect.top += DPI_SY(4);
+            title_rect.right -= DPI_SX(10);
+            title_rect.bottom = title_rect.top + DPI_SY(16);
+            SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, item_text);
+            DrawText(canvas, item._title.c_str(), -1, &title_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+            RECT meta_rect = item_rect;
+            meta_rect.left += DPI_SX(42);
+            meta_rect.top += DPI_SY(18);
+            meta_rect.right -= DPI_SX(10);
+            SelectObject(canvas, _meta_font ? _meta_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, meta_text);
+            DrawText(canvas, item._path.c_str(), -1, &meta_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        }
+
+        if (GetVisibleDriveFolderCount() == 0) {
+            RECT empty_rect = GetDriveFoldersListRect();
+            SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, meta_text);
+            DrawText(canvas, TEXT("No visible folders in C:\\."), -1, &empty_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+        }
+    } else {
+        DrawText(canvas, TEXT("Pinned"), -1, &programs_header_rect,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        RECT programs_button_rect = GetProgramsButtonRect();
+        FillRoundedRectPrimitive(canvas, programs_button_rect,
+            _hot_area == HOT_PROGRAMS_BUTTON ? action_hover_fill : action_fill,
+            DPI_SX(12), action_border);
+        RECT programs_button_text_rect = programs_button_rect;
+        programs_button_text_rect.left += DPI_SX(12);
+        programs_button_text_rect.right -= DPI_SX(18);
+        SelectObject(canvas, _meta_font ? _meta_font : g_Globals._hDefaultFont);
+        SetTextColor(canvas, RGB(236, 239, 242));
+        DrawText(canvas, TEXT("All"), -1, &programs_button_text_rect,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        DrawChevronRightPrimitive(canvas,
+            MakeRectWH(programs_button_rect.right - DPI_SX(16), programs_button_rect.top, DPI_SX(10), programs_button_rect.bottom - programs_button_rect.top),
+            RGB(236, 239, 242));
+
+        for (int index = 0; index < GetVisibleProgramCount(); ++index) {
+            RECT item_rect = GetProgramTileRect(index);
+            ModernStartMenuItem &item = _program_items[index];
+            EnsureItemIcon(item, _program_icon_size);
+
+            bool is_hot = _hot_area == HOT_PROGRAM && _hot_index == index;
+            COLORREF tile_color = is_hot ? program_hover_fill : panel_color;
+            if (is_hot)
+                FillRoundedRectPrimitive(canvas, item_rect, tile_color, DPI_SX(14));
+
+            HBRUSH tile_brush = CreateSolidBrush(tile_color);
+            int icon_left = item_rect.left + ((item_rect.right - item_rect.left - _program_icon_size) / 2);
+            int icon_top = item_rect.top + DPI_SY(8);
+            g_Globals._icon_cache.get_icon(item._icon_id).draw(canvas, icon_left, icon_top,
+                _program_icon_size, _program_icon_size, tile_color, tile_brush);
+            DeleteObject(tile_brush);
+
+            RECT text_rect = item_rect;
+            text_rect.top = icon_top + _program_icon_size + DPI_SY(8);
+            text_rect.left += DPI_SX(6);
+            text_rect.right -= DPI_SX(6);
+            text_rect.bottom -= DPI_SY(8);
+            SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, item_text);
+            DrawText(canvas, item._title.c_str(), -1, &text_rect,
+                DT_CENTER | DT_TOP | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+        }
+
+        if (GetVisibleProgramCount() == 0) {
+            RECT empty_rect = GetProgramsGridRect();
+            SelectObject(canvas, _item_font ? _item_font : g_Globals._hDefaultFont);
+            SetTextColor(canvas, meta_text);
+            DrawText(canvas, TEXT("No applications found."), -1, &empty_rect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+        }
+
         RECT recommended_header_rect = GetRecommendedHeaderRect();
         SelectObject(canvas, _section_font ? _section_font : g_Globals._hDefaultFont);
         SetTextColor(canvas, section_text);
-        DrawText(canvas, TEXT("Recommended"), -1, &recommended_header_rect,
+        DrawText(canvas, TEXT("Recents"), -1, &recommended_header_rect,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
         RECT recommended_button_rect = GetRecommendedButtonRect();
@@ -2673,8 +4120,9 @@ void StartMenuRoot::Paint(HDC canvas)
         RECT recommended_button_text_rect = recommended_button_rect;
         recommended_button_text_rect.left += DPI_SX(12);
         recommended_button_text_rect.right -= DPI_SX(18);
+        SelectObject(canvas, _meta_font ? _meta_font : g_Globals._hDefaultFont);
         SetTextColor(canvas, RGB(236, 239, 242));
-        DrawText(canvas, TEXT("More"), -1, &recommended_button_text_rect,
+        DrawText(canvas, TEXT("Open"), -1, &recommended_button_text_rect,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         DrawChevronRightPrimitive(canvas,
             MakeRectWH(recommended_button_rect.right - DPI_SX(16), recommended_button_rect.top, DPI_SX(10), recommended_button_rect.bottom - recommended_button_rect.top),
@@ -2719,7 +4167,7 @@ void StartMenuRoot::Paint(HDC canvas)
             RECT empty_rect = GetRecommendedGridRect();
             SelectObject(canvas, _meta_font ? _meta_font : g_Globals._hDefaultFont);
             SetTextColor(canvas, meta_text);
-            DrawText(canvas, TEXT("No recent items yet."), -1, &empty_rect,
+            DrawText(canvas, TEXT("No recents yet."), -1, &empty_rect,
                 DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
         }
     }
@@ -2737,7 +4185,7 @@ void StartMenuRoot::Paint(HDC canvas)
     RECT profile_chip_rect = profile_rect;
     profile_chip_rect.top += DPI_SY(6);
     profile_chip_rect.bottom -= DPI_SY(6);
-    profile_chip_rect.right = min(profile_chip_rect.right, profile_chip_rect.left + DPI_SX(228));
+    profile_chip_rect.right -= DPI_SX(6);
     if (_hot_area == HOT_PROFILE)
         FillRoundedRectPrimitive(canvas, profile_chip_rect, profile_hover_fill, DPI_SX(12));
 
@@ -2778,18 +4226,6 @@ void StartMenuRoot::Paint(HDC canvas)
     DrawText(canvas, _user_name.c_str(), -1, &user_text_rect,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
 
-    RECT power_rect = GetPowerRect();
-    FillRoundedRectPrimitive(canvas, power_rect, power_fill, DPI_SX(12), power_border);
-    HBRUSH power_brush = CreateSolidBrush(power_fill);
-    g_Globals._icon_cache.get_icon(ICID_SHUTDOWN).draw(canvas,
-        power_rect.left + ((power_rect.right - power_rect.left - metrics._recommended_icon_size) / 2),
-        power_rect.top + ((power_rect.bottom - power_rect.top - metrics._recommended_icon_size) / 2),
-        metrics._recommended_icon_size,
-        metrics._recommended_icon_size,
-        power_fill,
-        power_brush);
-    DeleteObject(power_brush);
-
     SetTextColor(canvas, old_text_color);
     SetBkMode(canvas, old_bk_mode);
     SelectObject(canvas, old_font);
@@ -2799,6 +4235,8 @@ void StartMenuRoot::CloseStartMenu(int id)
 {
     _tracking_mouse = false;
     ClearHotState();
+    _search_active = false;
+    RefreshSearchEditBrush();
 
     if (IsStartMenuVisible())
         ShowWindow(_hwnd, SW_HIDE);
