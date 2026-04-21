@@ -880,6 +880,29 @@ DesktopShellView::StretchWallpaper()
     return _hbmWallp;
 }
 
+static String GetExecutableWallpaperPath()
+{
+    String module_path = JVAR("JVAR_MODULEPATH").ToString();
+    TCHAR module_dir[MAX_PATH] = { 0 };
+
+    if (module_path.empty()) {
+        if (!GetModuleFileName(NULL, module_dir, COUNTOF(module_dir)) || !module_dir[0])
+            return String();
+
+        PathRemoveFileSpec(module_dir);
+        module_path = module_dir;
+    }
+
+    if (module_path.empty())
+        return String();
+
+    TCHAR wallpaper_path[MAX_PATH] = { 0 };
+    if (!PathCombine(wallpaper_path, module_path.c_str(), TEXT("wallpaper.jpg")))
+        return String();
+
+    return String(wallpaper_path);
+}
+
 static BOOL UpdateWallpaper();
 
 LRESULT DesktopShellView::LoadWallpaper(BOOL fInitial)
@@ -897,13 +920,18 @@ LRESULT DesktopShellView::LoadWallpaper(BOOL fInitial)
         SetRect(&_rcWp, 0, 0, 0, 0);
         SetRect(&_rcBitmapWp, 0, 0, 0, 0);
 
-        String wallpaper_path = JCFG2_DEF("JS_DESKTOP", "wallpaper", TEXT("")).ToString();
-        if (wallpaper_path == TEXT("")) {
-            UpdateWallpaper();
+        String wallpaper_path = GetExecutableWallpaperPath();
+        if (!wallpaper_path.empty() && PathFileExists(wallpaper_path.c_str())) {
+            lstrcpyn(_szBMPName, wallpaper_path.c_str(), COUNTOF(_szBMPName));
+        } else {
             wallpaper_path = JCFG2_DEF("JS_DESKTOP", "wallpaper", TEXT("")).ToString();
+            if (wallpaper_path == TEXT("")) {
+                UpdateWallpaper();
+                wallpaper_path = JCFG2_DEF("JS_DESKTOP", "wallpaper", TEXT("")).ToString();
+            }
+            ExpandEnvironmentStrings(wallpaper_path, _szBMPName, MAX_PATH);
         }
         _fStyleWallp = JCFG2("JS_DESKTOP", "wallpaperstyle").ToInt();
-        ExpandEnvironmentStrings(wallpaper_path, _szBMPName, MAX_PATH);
         int x, y;
         _hbmWallp = SHLoadDIBitmap(_szBMPName, &x, &y);
         if (_hbmWallp) {
@@ -977,6 +1005,17 @@ void DesktopShellView::DrawDesktopBkgnd(HDC hdc)
 static BOOL UpdateWallpaper()
 {
     static TCHAR lastWPPath[MAX_PATH] = { 0 };
+
+    String wallpaper_path = GetExecutableWallpaperPath();
+    if (!wallpaper_path.empty() && PathFileExists(wallpaper_path.c_str())) {
+        if (lstrcmpi(lastWPPath, wallpaper_path.c_str()) == 0)
+            return FALSE;
+
+        lstrcpyn(lastWPPath, wallpaper_path.c_str(), COUNTOF(lastWPPath));
+        SET_JCFG2("JS_DESKTOP", "wallpaper") = wallpaper_path;
+        return TRUE;
+    }
+
     TCHAR wpPath[MAX_PATH] = { 0 };
     if (!SystemParametersInfo(SPI_GETDESKWALLPAPER, MAX_PATH, wpPath, 0)) return FALSE;
     if (lstrcmpi(lastWPPath, wpPath) == 0) return FALSE;

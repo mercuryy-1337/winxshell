@@ -106,6 +106,7 @@ struct TaskBar : public Window {
 
 protected:
     WindowHandle _htoolbar;
+    HIMAGELIST  _himl;
     TaskBarMap  _map;
     int         _next_id;
     WindowHandle _last_foreground_wnd;

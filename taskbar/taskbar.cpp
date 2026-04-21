@@ -446,6 +446,7 @@ TaskBar::TaskBar(HWND hwnd)
     :  super(hwnd),
        WM_SHELLHOOK(RegisterWindowMessage(WINMSG_SHELLHOOK))
 {
+    _himl = 0;
     _last_btn_width = 0;
 
     _mmMetrics_org.cbSize = sizeof(MINIMIZEDMETRICS);
@@ -477,6 +478,9 @@ TaskBar::~TaskBar()
 
     if (g_SetTaskmanWindow)
         (*g_SetTaskmanWindow)(0);
+
+    if (_himl)
+        ImageList_Destroy(_himl);
 
     SystemParametersInfo(SPI_GETMINIMIZEDMETRICS, sizeof(_mmMetrics_org), &_mmMetrics_org, 0);
 }
@@ -524,6 +528,12 @@ LRESULT TaskBar::Init(LPCREATESTRUCT pcs)
 
     SendMessage(_htoolbar, TB_BUTTONSTRUCTSIZE, (WPARAM)sizeof(TBBUTTON), 0);
     SendMessage(_htoolbar, TB_SETBUTTONWIDTH, 0, MAKELPARAM(TASKBUTTONWIDTH_MAX, TASKBUTTONWIDTH_MAX));
+
+    _himl = ImageList_Create(_icon_area.right, _icon_area.bottom, ILC_COLOR32, 16, 16);
+    if (_himl) {
+        ImageList_SetBkColor(_himl, CLR_NONE);
+        SendMessage(_htoolbar, TB_SETIMAGELIST, 0, (LPARAM)_himl);
+    }
 
     if (_no_task_title) {
         // show only icons — full-slot bitmaps, no text display
@@ -1117,13 +1127,13 @@ static HBITMAP TryCreateEntryBitmapFromPath(HWND hwndToolbar, LPCTSTR path, cons
             return 0;
 
         WindowCanvas canvas(hwndToolbar);
-        HBITMAP hbmp = create_bitmap_from_icon(sfi.hIcon, TASKBAR_BRUSH(), canvas, TASKBAR_ICON_SIZE, rect);
+        HBITMAP hbmp = create_bitmap_from_icon(sfi.hIcon, NULL, canvas, TASKBAR_ICON_SIZE, rect);
         DestroyIcon(sfi.hIcon);
         return hbmp;
     }
 
     WindowCanvas canvas(hwndToolbar);
-    return icon.create_bitmap(TASKBAR_TEXTCOLOR(), TASKBAR_BRUSH(), canvas, TASKBAR_ICON_SIZE, rect);
+    return icon.create_bitmap(TASKBAR_TEXTCOLOR(), NULL, canvas, TASKBAR_ICON_SIZE, rect);
 }
 
 HBITMAP TaskBar::CreateEntryBitmap(const TaskBarEntry &entry)
@@ -1143,7 +1153,7 @@ HBITMAP TaskBar::CreateEntryBitmap(const TaskBarEntry &entry)
 
     if (entry._launch_kind == TASKBAR_LAUNCH_EXPLORER) {
         return g_Globals._icon_cache.get_icon(ICID_EXPLORER).create_bitmap(
-            TASKBAR_TEXTCOLOR(), TASKBAR_BRUSH(), canvas, TASKBAR_ICON_SIZE, rect);
+            TASKBAR_TEXTCOLOR(), NULL, canvas, TASKBAR_ICON_SIZE, rect);
     }
 
     if (entry._launch_kind == TASKBAR_LAUNCH_SHORTCUT && !entry._launch_path.empty()) {
@@ -1197,7 +1207,7 @@ HBITMAP TaskBar::CreateEntryBitmap(const TaskBarEntry &entry)
         hIcon = LoadIcon(0, IDI_APPLICATION);
     }
 
-    return create_bitmap_from_icon(hIcon, TASKBAR_BRUSH(), canvas, TASKBAR_ICON_SIZE, rect);
+    return create_bitmap_from_icon(hIcon, NULL, canvas, TASKBAR_ICON_SIZE, rect);
 }
 
 
@@ -1584,6 +1594,9 @@ void TaskBar::Refresh()
         while (button_count-- > 0)
             SendMessage(_htoolbar, TB_DELETEBUTTON, 0, 0);
 
+        if (_himl)
+            ImageList_RemoveAll(_himl);
+
         _next_id = IDC_FIRST_APP;
 
         for (size_t index = 0; index < desired_visible_order.size(); ++index) {
@@ -1593,8 +1606,12 @@ void TaskBar::Refresh()
 
             TaskBarEntry &entry = found->second;
             HBITMAP hbmp = entry._hbmp ? entry._hbmp : CreateEntryBitmap(entry);
-            TBADDBITMAP ab = {0, (UINT_PTR)hbmp};
-            entry._bmp_idx = (int)SendMessage(_htoolbar, TB_ADDBITMAP, 1, (LPARAM)&ab);
+            if (_himl)
+                entry._bmp_idx = ImageList_Add(_himl, hbmp, 0);
+            if (!_himl || entry._bmp_idx == -1) {
+                TBADDBITMAP ab = {0, (UINT_PTR)hbmp};
+                entry._bmp_idx = (int)SendMessage(_htoolbar, TB_ADDBITMAP, 1, (LPARAM)&ab);
+            }
             entry._hbmp = hbmp;
             entry._id = _next_id++;
 

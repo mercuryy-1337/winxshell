@@ -141,6 +141,7 @@ QuickLaunchBar::QuickLaunchBar(HWND hwnd)
 {
     CONTEXT("QuickLaunchBar::QuickLaunchBar()");
 
+    _himl = 0;
     _dir = NULL;
     _next_id = IDC_FIRST_QUICK_ID;
     _btn_dist = 20;
@@ -182,6 +183,12 @@ QuickLaunchBar::QuickLaunchBar(HWND hwnd)
     SendMessage(hwnd, TB_SETBUTTONWIDTH, 0, MAKELPARAM(_btn_width, _btn_width));
     SendMessage(hwnd, TB_SETBITMAPSIZE, 0, MAKELPARAM(_btn_width, DESKTOPBARBAR_HEIGHT));
 
+    _himl = ImageList_Create(_btn_width, DESKTOPBARBAR_HEIGHT, ILC_COLOR32, 16, 16);
+    if (_himl) {
+        ImageList_SetBkColor(_himl, CLR_NONE);
+        SendMessage(hwnd, TB_SETIMAGELIST, 0, (LPARAM)_himl);
+    }
+
     // delay refresh to some time later
     PostMessage(hwnd, PM_REFRESH, 0, 0);
     // SetTimer(hwnd, PM_RELOAD_BUTTONS, 10000, NULL);
@@ -192,6 +199,8 @@ QuickLaunchBar::~QuickLaunchBar()
 {
     if (_hSHNotify != 0)
         SHChangeNotifyDeregister(_hSHNotify);
+    if (_himl)
+        ImageList_Destroy(_himl);
     delete _dir;
 }
 
@@ -254,6 +263,9 @@ void QuickLaunchBar::ReloadShortcuts()
         SendMessage(_hwnd, TB_DELETEBUTTON, i, 0);
     }
 
+    if (_himl)
+        ImageList_RemoveAll(_himl);
+
     AddShortcuts();
 }
 
@@ -290,7 +302,7 @@ void QuickLaunchBar::AddShortcuts()
     WindowCanvas canvas(_hwnd);
 
     COLORREF bk_color = TASKBAR_TEXTCOLOR();
-    HBRUSH bk_brush = TASKBAR_BRUSH(); //GetSysColorBrush(COLOR_BTNFACE);
+    HBRUSH bk_brush = NULL;
 
 
     static int bHideShowDesktop = -1;
@@ -388,8 +400,13 @@ void QuickLaunchBar::AddShortcuts()
 
 void QuickLaunchBar::AddButton(int id, HBITMAP hbmp, LPCTSTR name, Entry *entry, int flags)
 {
-    TBADDBITMAP ab = {0, (UINT_PTR)hbmp};
-    int bmp_idx = (int)SendMessage(_hwnd, TB_ADDBITMAP, 1, (LPARAM)&ab);
+    int bmp_idx = -1;
+    if (_himl)
+        bmp_idx = ImageList_Add(_himl, hbmp, 0);
+    if (!_himl || bmp_idx == -1) {
+        TBADDBITMAP ab = {0, (UINT_PTR)hbmp};
+        bmp_idx = (int)SendMessage(_hwnd, TB_ADDBITMAP, 1, (LPARAM)&ab);
+    }
 
     QuickLaunchEntry qle;
 

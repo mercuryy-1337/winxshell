@@ -6,9 +6,9 @@
 //
 // Version
 //
-#define PRODUCT_VERSION_STR "1.0.2"
+#define PRODUCT_VERSION_STR "1.0.3"
 #define PRODUCT_COPYRIGHT_STR "(c) 2015-2026 Slore"
-#define RELEASE_DATE 1,0,2,0
+#define RELEASE_DATE 1,0,3,0
 
 #define IDS_TITLE                       1
 #define MANIFEST_RESOURCE_ID            1

@@ -196,18 +196,29 @@ HBITMAP create_small_bitmap_from_icon(HICON hIcon, HBRUSH hbrush_bkgnd, HDC hdc_
     return hbmp;
 }
 
+static HBITMAP CreateAlphaBitmap(int width, int height, void **bits_out)
+{
+    if (bits_out)
+        *bits_out = NULL;
+
+    if (width <= 0 || height <= 0)
+        return 0;
+
+    BITMAPINFO bmi = { 0 };
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    return CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, bits_out, NULL, 0);
+}
+
 HBITMAP create_bitmap_from_icon(HICON hIcon, HBRUSH hbrush_bkgnd, HDC hdc_wnd, int icon_size, RECT rect)
 {
     int w = rect.right;
     int h = rect.bottom;
-
-    HBITMAP hbmp = CreateCompatibleBitmap(hdc_wnd, w, h);
-
-    MemCanvas canvas;
-    BitmapSelection sel(canvas, hbmp);
-
-    RECT rect2 = { 0, 0, w, h };
-    FillRect(canvas, &rect2, hbrush_bkgnd);
 
     int draw_width = icon_size;
     int draw_height = icon_size;
@@ -221,6 +232,33 @@ HBITMAP create_bitmap_from_icon(HICON hIcon, HBRUSH hbrush_bkgnd, HDC hdc_wnd, i
 
     Gdiplus::Bitmap *icon_bitmap = NULL;
     Gdiplus::Rect content_bounds;
+
+    if (!hbrush_bkgnd) {
+        void *dib_bits = NULL;
+        HBITMAP hbmp = CreateAlphaBitmap(w, h, &dib_bits);
+        if (!hbmp || !dib_bits) {
+            if (hbmp)
+                DeleteObject(hbmp);
+            return 0;
+        }
+
+        ZeroMemory(dib_bits, (size_t)w * (size_t)h * 4);
+
+        MemCanvas canvas;
+        BitmapSelection sel(canvas, hbmp);
+        DrawIconEx(canvas, draw_x, draw_y, hIcon, draw_width, draw_height, 0, NULL, DI_NORMAL);
+
+        return hbmp;
+    }
+
+    HBITMAP hbmp = CreateCompatibleBitmap(hdc_wnd, w, h);
+
+    MemCanvas canvas;
+    BitmapSelection sel(canvas, hbmp);
+
+    RECT rect2 = { 0, 0, w, h };
+    FillRect(canvas, &rect2, hbrush_bkgnd);
+
     if (GetIconContentBounds(hIcon, &icon_bitmap, &content_bounds)) {
         Gdiplus::Graphics graphics(canvas);
         graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);

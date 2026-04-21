@@ -72,6 +72,7 @@ protected:
     int     Command(int id, int code);
     int     Notify(int id, NMHDR *pnmh);
 
+    HIMAGELIST      _himl;
     ShellDirectory *_dir;
 
     int             _next_id;
