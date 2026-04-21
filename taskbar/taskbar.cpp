@@ -1816,6 +1816,7 @@ TaskBarMap::iterator TaskBarMap::find_id(int id)
 void TaskBar::ResizeButtons()
 {
     int btns = 0;
+    bool direct_icon_draw = UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title);
     for (TaskBarMap::const_iterator it = _map.begin(); it != _map.end(); ++it)
         if (it->second._id)
             ++btns;
@@ -1835,7 +1836,7 @@ void TaskBar::ResizeButtons()
         }
 
         int min_btn_width = TASKBUTTONWIDTH_MIN;
-        if (UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title))
+        if (direct_icon_draw)
             min_btn_width = taskbar_draw::GetModernButtonSlotWidth();
         else if (_no_task_title)
             min_btn_width = TASKBAR_ICON_SIZE + DPI_SX(4);
@@ -1851,15 +1852,55 @@ void TaskBar::ResizeButtons()
             SendMessage(_htoolbar, TB_SETBUTTONWIDTH, 0, MAKELONG(btn_width, btn_width));
             SendMessage(_htoolbar, TB_AUTOSIZE, 0, 0);
         }
+
+        if (direct_icon_draw && _centered_layout && _htoolbar) {
+            for (TaskBarMap::const_iterator it = _map.begin(); it != _map.end(); ++it) {
+                if (!it->second._id || it->second._btn_idx < 0)
+                    continue;
+
+                TBBUTTONINFO btninfo = { 0 };
+                btninfo.cbSize = sizeof(TBBUTTONINFO);
+                btninfo.dwMask = TBIF_BYINDEX | TBIF_SIZE;
+                btninfo.cx = btn_width;
+                SendMessage(_htoolbar, TB_SETBUTTONINFO, it->second._btn_idx, (LPARAM)&btninfo);
+            }
+            SendMessage(_htoolbar, TB_AUTOSIZE, 0, 0);
+        }
     }
 }
 
 int TaskBar::GetPreferredWidth() const
 {
+    bool direct_icon_draw = UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title);
     if (_htoolbar && IsWindow(_htoolbar)) {
-        SIZE max_size = { 0 };
-        if (SendMessage(_htoolbar, TB_GETMAXSIZE, 0, (LPARAM)&max_size) && max_size.cx > 0)
-            return max_size.cx + DPI_SX(4);
+        if (_centered_layout && direct_icon_draw) {
+            int max_right = 0;
+            int min_left = 0;
+            bool have_rect = false;
+
+            for (TaskBarMap::const_iterator it = _map.begin(); it != _map.end(); ++it) {
+                if (!it->second._id || it->second._btn_idx < 0)
+                    continue;
+
+                RECT item_rect = { 0 };
+                if (!SendMessage(_htoolbar, TB_GETITEMRECT, it->second._btn_idx, (LPARAM)&item_rect))
+                    continue;
+
+                if (!have_rect || item_rect.left < min_left)
+                    min_left = item_rect.left;
+                if (!have_rect || item_rect.right > max_right)
+                    max_right = item_rect.right;
+
+                have_rect = true;
+            }
+
+            if (have_rect)
+                return max_right + max(DPI_SX(2), min_left);
+        } else {
+            SIZE max_size = { 0 };
+            if (SendMessage(_htoolbar, TB_GETMAXSIZE, 0, (LPARAM)&max_size) && max_size.cx > 0)
+                return max_size.cx + DPI_SX(4);
+        }
     }
 
     int btns = 0;

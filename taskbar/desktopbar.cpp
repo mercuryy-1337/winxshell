@@ -1269,7 +1269,9 @@ void DesktopBar::RefreshLayoutMetrics()
         configured_start_width = Value();
     }
 
-    if (configured_start_width.GetType() == IntVal) {
+    if (_centered_layout && configured_start_width.GetType() != IntVal) {
+        _start_button_width = DESKTOPBARBAR_HEIGHT + 8;
+    } else if (configured_start_width.GetType() == IntVal) {
         _start_button_width = _centered_layout ? DPI_SX(configured_start_width.ToInt()) : configured_start_width.ToInt();
     } else {
         _start_button_width = start_btn_width;
