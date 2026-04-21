@@ -358,6 +358,211 @@ static void DrawTaskbarButtonHighlight(HDC hdc, const RECT &item_rect, float hov
     }
 }
 
+static bool UseDirectTaskbarIconDraw(bool rounded_highlight, bool no_task_title)
+{
+    return rounded_highlight && no_task_title;
+}
+
+static void DrawTaskbarButtonIndicators(HDC hdc, const RECT &item_rect, int wnd_count, float active_progress)
+{
+    if (wnd_count <= 0)
+        return;
+
+    COLORREF indicator_color = TASKBAR_TASKLINECOLOR();
+    if (indicator_color == MAXDWORD)
+        return;
+
+    BYTE dot_alpha = taskbar_draw::LerpAlpha(
+        taskbar_draw::GetIndicatorIdleAlpha(),
+        taskbar_draw::GetIndicatorActiveAlpha(),
+        active_progress);
+
+    int dot_d = DPI_SX(4);
+    int dot_r = dot_d / 2;
+    int dot_y = item_rect.bottom - DPI_SY(5) - dot_d;
+    int btn_cx = (item_rect.left + item_rect.right) / 2;
+
+    if (wnd_count >= 2) {
+        int gap = DPI_SX(3);
+        RECT d1 = { btn_cx - gap / 2 - dot_d, dot_y, btn_cx - gap / 2, dot_y + dot_d };
+        RECT d2 = { btn_cx + (gap + 1) / 2, dot_y, btn_cx + (gap + 1) / 2 + dot_d, dot_y + dot_d };
+        taskbar_draw::FillRoundedRect(hdc, d1, dot_r, indicator_color, dot_alpha);
+        taskbar_draw::FillRoundedRect(hdc, d2, dot_r, indicator_color, dot_alpha);
+    } else {
+        RECT dot = { btn_cx - dot_r, dot_y, btn_cx + dot_r, dot_y + dot_d };
+        taskbar_draw::FillRoundedRect(hdc, dot, dot_r, indicator_color, dot_alpha);
+    }
+}
+
+struct TaskbarResolvedIcon {
+    TaskbarResolvedIcon()
+        : _icon(NULL),
+          _destroy(false)
+    {
+    }
+
+    HICON   _icon;
+    bool    _destroy;
+};
+
+static void ReleaseTaskbarResolvedIcon(TaskbarResolvedIcon *resolved)
+{
+    if (!resolved)
+        return;
+
+    if (resolved->_destroy && resolved->_icon)
+        DestroyIcon(resolved->_icon);
+
+    resolved->_icon = NULL;
+    resolved->_destroy = false;
+}
+
+static bool TryResolveTaskbarIconFromPath(LPCTSTR path, TaskbarResolvedIcon *resolved)
+{
+    if (!resolved || !path || !*path)
+        return false;
+
+    if (PathMatchSpec(path, TEXT("*.exe")) || PathMatchSpec(path, TEXT("*.ico"))) {
+        HICON extracted_icon = NULL;
+        int requested_size = TASKBAR_ICON_SIZE * 2;
+        if (requested_size < DPI_SX(40))
+            requested_size = DPI_SX(40);
+        if (requested_size < 48)
+            requested_size = 48;
+
+        UINT extracted = PrivateExtractIcons(path, 0, requested_size, requested_size, &extracted_icon, NULL, 1, LR_LOADFROMFILE);
+        if (extracted > 0 && extracted_icon) {
+            resolved->_icon = extracted_icon;
+            resolved->_destroy = true;
+            return true;
+        }
+    }
+
+    const Icon &icon = g_Globals._icon_cache.extract(path, ICF_LARGE | ICF_NOLINKOVERLAY);
+    if ((ICON_ID)icon != ICID_NONE && (ICON_ID)icon != ICID_UNKNOWN && icon.get_hicon()) {
+        resolved->_icon = icon.get_hicon();
+        resolved->_destroy = false;
+        return true;
+    }
+
+    SHFILEINFO sfi = { 0 };
+    if (SHGetFileInfo(path, 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_LARGEICON) && sfi.hIcon) {
+        resolved->_icon = sfi.hIcon;
+        resolved->_destroy = true;
+        return true;
+    }
+
+    return false;
+}
+
+static TaskbarResolvedIcon ResolveTaskbarEntryIcon(const TaskBarEntry &entry)
+{
+    TaskbarResolvedIcon resolved;
+
+    String peazip_app_key = taskbar_identity::GetPeaZipAppKey();
+    if (!peazip_app_key.empty() && entry._app_key == peazip_app_key) {
+        TCHAR peazip_path[MAX_PATH] = { 0 };
+        if (TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path)) && TryResolveTaskbarIconFromPath(peazip_path, &resolved))
+            return resolved;
+    }
+
+    if (entry._launch_kind == TASKBAR_LAUNCH_EXPLORER) {
+        resolved._icon = g_Globals._icon_cache.get_icon(ICID_EXPLORER).get_hicon();
+        return resolved;
+    }
+
+    if (entry._launch_kind == TASKBAR_LAUNCH_SHORTCUT && !entry._launch_path.empty()) {
+        if (TryResolveTaskbarIconFromPath(entry._launch_path.c_str(), &resolved))
+            return resolved;
+
+        if (PathMatchSpec(entry._launch_path.c_str(), TEXT("*.lnk"))) {
+            TCHAR target_path[MAX_PATH] = { 0 };
+            GetShortcutPath(entry._launch_path.c_str(), target_path, COUNTOF(target_path));
+            if (TryResolveTaskbarIconFromPath(target_path, &resolved))
+                return resolved;
+        }
+    }
+
+    String icon_path = entry._launch_path;
+    if (icon_path.empty()) {
+        LPCTSTR app_key = entry._app_key.c_str();
+        if (!_tcsncmp(app_key, TEXT("path:"), 5))
+            icon_path = app_key + 5;
+    }
+
+    if (TryResolveTaskbarIconFromPath(icon_path.c_str(), &resolved))
+        return resolved;
+
+    if (entry._primary_hwnd && IsWindow(entry._primary_hwnd)) {
+        TCHAR process_path[MAX_PATH] = { 0 };
+        if (taskbar_identity::GetWindowProcessPath(entry._primary_hwnd, process_path, COUNTOF(process_path)) &&
+            TryResolveTaskbarIconFromPath(process_path, &resolved)) {
+            return resolved;
+        }
+    }
+
+    if (entry._primary_hwnd && IsWindow(entry._primary_hwnd)) {
+        TCHAR class_name[BUFFER_LEN] = { 0 };
+        if (GetClassName(entry._primary_hwnd, class_name, COUNTOF(class_name)) &&
+            !_tcsicmp(class_name, TEXT("ConsoleWindowClass"))) {
+            resolved._icon = g_Globals._icon_cache.get_icon(ICID_CMDEXE).get_hicon();
+            return resolved;
+        }
+
+        resolved._icon = get_window_icon_big(entry._primary_hwnd, true);
+        if (resolved._icon)
+            return resolved;
+    }
+
+    resolved._icon = LoadIcon(0, IDI_APPLICATION);
+    return resolved;
+}
+
+static RECT GetDirectTaskbarIconRect(const RECT &item_rect)
+{
+    int icon_size = TASKBAR_ICON_SIZE + DPI_SX(3);
+    int max_width = item_rect.right - item_rect.left - DPI_SX(4);
+    int max_height = item_rect.bottom - item_rect.top - DPI_SY(14);
+    int max_size = min(max_width, max_height);
+
+    if (max_size < DPI_SX(20))
+        max_size = min(item_rect.right - item_rect.left, item_rect.bottom - item_rect.top);
+
+    if (icon_size < DPI_SX(20))
+        icon_size = DPI_SX(20);
+    if (icon_size > max_size)
+        icon_size = max_size;
+    if (icon_size < 1)
+        icon_size = 1;
+
+    int item_width = item_rect.right - item_rect.left;
+    if (((item_width - icon_size) & 1) != 0) {
+        if (icon_size > DPI_SX(20))
+            --icon_size;
+        else if (icon_size < max_size)
+            ++icon_size;
+    }
+
+    int left = item_rect.left + ((item_rect.right - item_rect.left) - icon_size) / 2;
+    int top = item_rect.top + ((item_rect.bottom - item_rect.top) - icon_size) / 2 - DPI_SY(1);
+    int bottom_margin = DPI_SY(7);
+    if (top + icon_size > item_rect.bottom - bottom_margin)
+        top = item_rect.bottom - bottom_margin - icon_size;
+
+    RECT rect = { left, top, left + icon_size, top + icon_size };
+    return rect;
+}
+
+static void DrawDirectTaskbarEntryIcon(HDC hdc, const RECT &item_rect, const TaskBarEntry &entry)
+{
+    TaskbarResolvedIcon resolved = ResolveTaskbarEntryIcon(entry);
+    if (resolved._icon) {
+        RECT icon_rect = GetDirectTaskbarIconRect(item_rect);
+        draw_icon_high_quality(hdc, resolved._icon, icon_rect);
+    }
+    ReleaseTaskbarResolvedIcon(&resolved);
+}
+
 TaskBarEntry::TaskBarEntry()
 {
     _id = 0;
@@ -415,6 +620,10 @@ void TaskBar::InitTaskbarStyle()
         if (!_rounded_highlight && JCFG2_DEF("JS_TASKBAR", "task_close_button", false).ToBool() != FALSE) {
             _task_close_button = true;
         }
+    }
+
+    if (UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title)) {
+        _preferred_btn_width = taskbar_draw::GetModernButtonSlotWidth();
     }
 
     if (!_rounded_highlight && clrTaskLine != MAXDWORD) {
@@ -834,6 +1043,14 @@ int TaskBar::Notify(int id, NMHDR *pnmh)
                     }
 
                     DrawTaskbarButtonHighlight(lptbcd->nmcd.hdc, lptbcd->nmcd.rc, hover_progress, active_progress);
+                        if (UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title)) {
+                            if (found != _map.end()) {
+                                DrawDirectTaskbarEntryIcon(lptbcd->nmcd.hdc, lptbcd->nmcd.rc, found->second);
+                                DrawTaskbarButtonIndicators(lptbcd->nmcd.hdc, lptbcd->nmcd.rc, found->second._window_group_count, active_progress);
+                            }
+                            return CDRF_SKIPDEFAULT;
+                        }
+
                     return TBCDRF_NOBACKGROUND | TBCDRF_NOEDGES | TBCDRF_NOOFFSET |
                         TBCDRF_NOETCHEDEFFECT | CDRF_NOTIFYPOSTPAINT | CDRF_USECDCOLORS;
                 }
@@ -863,42 +1080,11 @@ int TaskBar::Notify(int id, NMHDR *pnmh)
                 }
 
                 if (_rounded_highlight) {
-                    // Draw running-app dot indicator(s)
-                    COLORREF indicator_color = TASKBAR_TASKLINECOLOR();
-                    if (indicator_color != MAXDWORD) {
-                        int wnd_count = 0;
-                        if (found != _map.end())
-                            wnd_count = found->second._window_group_count;
+                    int wnd_count = 0;
+                    if (found != _map.end())
+                        wnd_count = found->second._window_group_count;
 
-                        if (wnd_count <= 0)
-                            return CDRF_DODEFAULT;
-
-                        BYTE dot_alpha = taskbar_draw::LerpAlpha(
-                            taskbar_draw::GetIndicatorIdleAlpha(),
-                            taskbar_draw::GetIndicatorActiveAlpha(),
-                            active_progress);
-                        if (!_animate_highlights) {
-                            dot_alpha = ((lptbcd->nmcd.uItemState & CDIS_CHECKED) == CDIS_CHECKED)
-                                ? taskbar_draw::GetIndicatorActiveAlpha()
-                                : taskbar_draw::GetIndicatorIdleAlpha();
-                        }
-
-                        int dot_d = DPI_SX(4);
-                        int dot_r = dot_d / 2;
-                        int dot_y = lptbcd->nmcd.rc.bottom - DPI_SY(5) - dot_d;
-                        int btn_cx = (lptbcd->nmcd.rc.left + lptbcd->nmcd.rc.right) / 2;
-
-                        if (wnd_count >= 2) {
-                            int gap = DPI_SX(3);
-                            RECT d1 = { btn_cx - gap / 2 - dot_d, dot_y, btn_cx - gap / 2, dot_y + dot_d };
-                            RECT d2 = { btn_cx + (gap + 1) / 2, dot_y, btn_cx + (gap + 1) / 2 + dot_d, dot_y + dot_d };
-                            taskbar_draw::FillRoundedRect(lptbcd->nmcd.hdc, d1, dot_r, indicator_color, dot_alpha);
-                            taskbar_draw::FillRoundedRect(lptbcd->nmcd.hdc, d2, dot_r, indicator_color, dot_alpha);
-                        } else {
-                            RECT dot = { btn_cx - dot_r, dot_y, btn_cx + dot_r, dot_y + dot_d };
-                            taskbar_draw::FillRoundedRect(lptbcd->nmcd.hdc, dot, dot_r, indicator_color, dot_alpha);
-                        }
-                    }
+                    DrawTaskbarButtonIndicators(lptbcd->nmcd.hdc, lptbcd->nmcd.rc, wnd_count, active_progress);
                 } else if (hbrTaskLine) {
                     RECT rect = lptbcd->nmcd.rc;
                     rect.top = DESKTOPBARBAR_HEIGHT - 4;
@@ -1124,100 +1310,16 @@ HICON get_window_icon_big(HWND hwnd, bool allow_from_class)
     return hIcon;
 }
 
-static HBITMAP TryCreateEntryBitmapFromPath(HWND hwndToolbar, LPCTSTR path, const RECT &rect)
-{
-    if (!path || !*path)
-        return 0;
-
-    const Icon &icon = g_Globals._icon_cache.extract(path, ICF_LARGE | ICF_NOLINKOVERLAY);
-    if ((ICON_ID)icon == ICID_NONE || (ICON_ID)icon == ICID_UNKNOWN)
-    {
-        SHFILEINFO sfi = { 0 };
-        if (!SHGetFileInfo(path, 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_LARGEICON) || !sfi.hIcon)
-            return 0;
-
-        WindowCanvas canvas(hwndToolbar);
-        HBITMAP hbmp = create_bitmap_from_icon(sfi.hIcon, NULL, canvas, TASKBAR_ICON_SIZE, rect);
-        DestroyIcon(sfi.hIcon);
-        return hbmp;
-    }
-
-    WindowCanvas canvas(hwndToolbar);
-    return icon.create_bitmap(TASKBAR_TEXTCOLOR(), NULL, canvas, TASKBAR_ICON_SIZE, rect);
-}
-
 HBITMAP TaskBar::CreateEntryBitmap(const TaskBarEntry &entry)
 {
     RECT rect = _icon_area;
     WindowCanvas canvas(_htoolbar);
-
-    String peazip_app_key = taskbar_identity::GetPeaZipAppKey();
-    if (!peazip_app_key.empty() && entry._app_key == peazip_app_key) {
-        TCHAR peazip_path[MAX_PATH] = { 0 };
-        if (TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path))) {
-            HBITMAP peazip_bitmap = TryCreateEntryBitmapFromPath(_htoolbar, peazip_path, rect);
-            if (peazip_bitmap)
-                return peazip_bitmap;
-        }
-    }
-
-    if (entry._launch_kind == TASKBAR_LAUNCH_EXPLORER) {
-        return g_Globals._icon_cache.get_icon(ICID_EXPLORER).create_bitmap(
-            TASKBAR_TEXTCOLOR(), NULL, canvas, TASKBAR_ICON_SIZE, rect);
-    }
-
-    if (entry._launch_kind == TASKBAR_LAUNCH_SHORTCUT && !entry._launch_path.empty()) {
-        HBITMAP launch_bitmap = TryCreateEntryBitmapFromPath(_htoolbar, entry._launch_path.c_str(), rect);
-        if (launch_bitmap)
-            return launch_bitmap;
-
-        if (PathMatchSpec(entry._launch_path.c_str(), TEXT("*.lnk"))) {
-            TCHAR target_path[MAX_PATH] = { 0 };
-            GetShortcutPath(entry._launch_path.c_str(), target_path, COUNTOF(target_path));
-
-            launch_bitmap = TryCreateEntryBitmapFromPath(_htoolbar, target_path, rect);
-            if (launch_bitmap)
-                return launch_bitmap;
-        }
-    }
-
-    String icon_path = entry._launch_path;
-    if (icon_path.empty()) {
-        LPCTSTR app_key = entry._app_key.c_str();
-        if (!_tcsncmp(app_key, TEXT("path:"), 5))
-            icon_path = app_key + 5;
-    }
-
-    HBITMAP hbmp = TryCreateEntryBitmapFromPath(_htoolbar, icon_path.c_str(), rect);
-    if (hbmp)
-        return hbmp;
-
-    if (entry._primary_hwnd && IsWindow(entry._primary_hwnd)) {
-        TCHAR process_path[MAX_PATH] = { 0 };
-        if (taskbar_identity::GetWindowProcessPath(entry._primary_hwnd, process_path, COUNTOF(process_path))) {
-            hbmp = TryCreateEntryBitmapFromPath(_htoolbar, process_path, rect);
-            if (hbmp)
-                return hbmp;
-        }
-    }
-
-    HICON hIcon = NULL;
-    if (entry._primary_hwnd && IsWindow(entry._primary_hwnd)) {
-        TCHAR class_name[BUFFER_LEN] = {0};
-        if (GetClassName(entry._primary_hwnd, class_name, COUNTOF(class_name)) &&
-            !_tcsicmp(class_name, TEXT("ConsoleWindowClass"))) {
-            hIcon = g_Globals._icon_cache.get_icon(ICID_CMDEXE).get_hicon();
-        }
-
-        if (!hIcon)
-            hIcon = get_window_icon_big(entry._primary_hwnd, true);
-    }
-
-    if (!hIcon) {
-        hIcon = LoadIcon(0, IDI_APPLICATION);
-    }
-
-    return create_bitmap_from_icon(hIcon, NULL, canvas, TASKBAR_ICON_SIZE, rect);
+    TaskbarResolvedIcon resolved = ResolveTaskbarEntryIcon(entry);
+    HBITMAP hbmp = 0;
+    if (resolved._icon)
+        hbmp = create_bitmap_from_icon(resolved._icon, NULL, canvas, TASKBAR_ICON_SIZE, rect);
+    ReleaseTaskbarResolvedIcon(&resolved);
+    return hbmp;
 }
 
 
@@ -1582,6 +1684,7 @@ void TaskBar::Refresh()
     if (rebuild_buttons) {
         DestoryThumbnailWindow();
         SendMessage(_htoolbar, WM_SETREDRAW, FALSE, 0);
+        bool direct_icon_draw = UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title);
 
         // Build set of keys that will remain visible
         set<String> visible_keys;
@@ -1615,13 +1718,21 @@ void TaskBar::Refresh()
                 continue;
 
             TaskBarEntry &entry = found->second;
-            HBITMAP hbmp = entry._hbmp ? entry._hbmp : CreateEntryBitmap(entry);
-            if (_himl)
-                entry._bmp_idx = ImageList_Add(_himl, hbmp, 0);
-            if (!_himl || entry._bmp_idx == -1) {
-                TBADDBITMAP ab = {0, (UINT_PTR)hbmp};
-                entry._bmp_idx = (int)SendMessage(_htoolbar, TB_ADDBITMAP, 1, (LPARAM)&ab);
+            HBITMAP hbmp = 0;
+            if (!direct_icon_draw) {
+                hbmp = entry._hbmp ? entry._hbmp : CreateEntryBitmap(entry);
+                if (_himl)
+                    entry._bmp_idx = ImageList_Add(_himl, hbmp, 0);
+                if (!_himl || entry._bmp_idx == -1) {
+                    TBADDBITMAP ab = {0, (UINT_PTR)hbmp};
+                    entry._bmp_idx = (int)SendMessage(_htoolbar, TB_ADDBITMAP, 1, (LPARAM)&ab);
+                }
+            } else {
+                if (entry._hbmp)
+                    DeleteObject(entry._hbmp);
+                entry._bmp_idx = -2;
             }
+
             entry._hbmp = hbmp;
             entry._id = _next_id++;
 
@@ -1632,7 +1743,7 @@ void TaskBar::Refresh()
             if (entry._title.length() && !_no_task_title)
                 btn.iString = (INT_PTR)entry._title.c_str();
 
-            btn.iBitmap = entry._bmp_idx;
+            btn.iBitmap = direct_icon_draw ? -2 : entry._bmp_idx;
             entry._btn_idx = (int)index;
             SendMessage(_htoolbar, TB_INSERTBUTTON, entry._btn_idx, (LPARAM)&btn);
         }
@@ -1724,7 +1835,9 @@ void TaskBar::ResizeButtons()
         }
 
         int min_btn_width = TASKBUTTONWIDTH_MIN;
-        if (_no_task_title)
+        if (UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title))
+            min_btn_width = taskbar_draw::GetModernButtonSlotWidth();
+        else if (_no_task_title)
             min_btn_width = TASKBAR_ICON_SIZE + DPI_SX(4);
 
         if (btn_width < min_btn_width)

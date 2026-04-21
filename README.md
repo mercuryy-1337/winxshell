@@ -2,7 +2,12 @@
 
 Explauncher is a native Win32 shell replacement and launcher for Windows. It combines a desktop shell, taskbar, start menu, search experience, Lua scripting support, and a packaged theme/UI system in a single C++ codebase.
 
-This repository is the rebranded Explauncher line and the current public app version is 1.0.4.
+This repository is the rebranded Explauncher line and the current public app version is 1.0.5.
+
+## Notable 1.0.5 changes
+
+- Bumped the public Explauncher version to `1.0.5`.
+- Rounded the taskbar alignment popup option highlights so the option and submenu boxes match the popup's rounded surfaces more closely.
 
 ## What Explauncher includes
 

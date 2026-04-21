@@ -246,7 +246,23 @@ HBITMAP create_bitmap_from_icon(HICON hIcon, HBRUSH hbrush_bkgnd, HDC hdc_wnd, i
 
         MemCanvas canvas;
         BitmapSelection sel(canvas, hbmp);
-        DrawIconEx(canvas, draw_x, draw_y, hIcon, draw_width, draw_height, 0, NULL, DI_NORMAL);
+
+        if (GetIconContentBounds(hIcon, &icon_bitmap, &content_bounds)) {
+            Gdiplus::Graphics graphics(canvas);
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+            graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+            graphics.DrawImage(icon_bitmap,
+                Gdiplus::Rect(draw_x, draw_y, draw_width, draw_height),
+                content_bounds.X,
+                content_bounds.Y,
+                content_bounds.Width,
+                content_bounds.Height,
+                Gdiplus::UnitPixel);
+            delete icon_bitmap;
+        } else {
+            DrawIconEx(canvas, draw_x, draw_y, hIcon, draw_width, draw_height, 0, NULL, DI_NORMAL);
+        }
 
         return hbmp;
     }
@@ -277,6 +293,117 @@ HBITMAP create_bitmap_from_icon(HICON hIcon, HBRUSH hbrush_bkgnd, HDC hdc_wnd, i
     }
 
     return hbmp;
+}
+
+BOOL draw_icon_high_quality(HDC hdc, HICON hIcon, const RECT &rect)
+{
+    if (!hdc || !hIcon)
+        return FALSE;
+
+    int width = rect.right - rect.left;
+    int height = rect.bottom - rect.top;
+    if (width <= 0 || height <= 0)
+        return FALSE;
+
+    Gdiplus::Bitmap *icon_bitmap = NULL;
+    Gdiplus::Rect content_bounds;
+    if (GetIconContentBounds(hIcon, &icon_bitmap, &content_bounds)) {
+        int draw_width = width;
+        int draw_height = height;
+        if (content_bounds.Width > 0 && content_bounds.Height > 0) {
+            if ((long long)content_bounds.Width * draw_height > (long long)content_bounds.Height * draw_width) {
+                draw_height = max(1, MulDiv(draw_width, content_bounds.Height, content_bounds.Width));
+            } else {
+                draw_width = max(1, MulDiv(draw_height, content_bounds.Width, content_bounds.Height));
+            }
+        }
+
+        int draw_x = rect.left + (width - draw_width) / 2;
+        int draw_y = rect.top + (height - draw_height) / 2;
+
+        int sample_scale = 2;
+        int sampled_width = max(1, draw_width * sample_scale);
+        int sampled_height = max(1, draw_height * sample_scale);
+        Gdiplus::Bitmap sampled(sampled_width, sampled_height, PixelFormat32bppPARGB);
+        if (sampled.GetLastStatus() == Gdiplus::Ok) {
+            Gdiplus::Graphics sampled_graphics(&sampled);
+            sampled_graphics.Clear(Gdiplus::Color(0, 0, 0, 0));
+            sampled_graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            sampled_graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+            sampled_graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+            sampled_graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+            sampled_graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+            sampled_graphics.DrawImage(icon_bitmap,
+                Gdiplus::Rect(0, 0, sampled_width, sampled_height),
+                content_bounds.X,
+                content_bounds.Y,
+                content_bounds.Width,
+                content_bounds.Height,
+                Gdiplus::UnitPixel);
+
+            Gdiplus::Graphics graphics(hdc);
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+            graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+            graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+            graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+            graphics.DrawImage(&sampled,
+                Gdiplus::Rect(draw_x, draw_y, draw_width, draw_height),
+                0,
+                0,
+                sampled_width,
+                sampled_height,
+                Gdiplus::UnitPixel);
+        } else {
+            Gdiplus::Graphics graphics(hdc);
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+            graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+            graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+            graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+            graphics.DrawImage(icon_bitmap,
+                Gdiplus::Rect(draw_x, draw_y, draw_width, draw_height),
+                content_bounds.X,
+                content_bounds.Y,
+                content_bounds.Width,
+                content_bounds.Height,
+                Gdiplus::UnitPixel);
+        }
+        delete icon_bitmap;
+        return TRUE;
+    }
+
+    SIZE icon_size = { width, height };
+    ICONINFO icon_info = { 0 };
+    if (GetIconInfo(hIcon, &icon_info)) {
+        BITMAP bmp = { 0 };
+        if (icon_info.hbmColor && GetObject(icon_info.hbmColor, sizeof(bmp), &bmp) == sizeof(BITMAP)) {
+            icon_size.cx = bmp.bmWidth;
+            icon_size.cy = bmp.bmHeight;
+        } else if (icon_info.hbmMask && GetObject(icon_info.hbmMask, sizeof(bmp), &bmp) == sizeof(BITMAP)) {
+            icon_size.cx = bmp.bmWidth;
+            icon_size.cy = bmp.bmHeight / 2;
+        }
+
+        if (icon_info.hbmColor)
+            DeleteObject(icon_info.hbmColor);
+        if (icon_info.hbmMask)
+            DeleteObject(icon_info.hbmMask);
+    }
+
+    int draw_width = width;
+    int draw_height = height;
+    if (icon_size.cx > 0 && icon_size.cy > 0) {
+        if ((long long)icon_size.cx * draw_height > (long long)icon_size.cy * draw_width) {
+            draw_height = max(1, MulDiv(draw_width, icon_size.cy, icon_size.cx));
+        } else {
+            draw_width = max(1, MulDiv(draw_height, icon_size.cx, icon_size.cy));
+        }
+    }
+
+    int draw_x = rect.left + (width - draw_width) / 2;
+    int draw_y = rect.top + (height - draw_height) / 2;
+    return DrawIconEx(hdc, draw_x, draw_y, hIcon, draw_width, draw_height, 0, NULL, DI_NORMAL);
 }
 
 

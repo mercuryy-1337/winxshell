@@ -28,8 +28,10 @@
 
 #include <precomp.h>
 
+#include <dwmapi.h>
 #include <gdiplus.h>
 #include <urlmon.h>
+#pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "urlmon.lib")
 
@@ -67,11 +69,19 @@
 #define CDRF_USECDCOLORS     0x00800000
 #endif
 
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+
 enum TaskbarAlignmentChoice {
     TASKBAR_ALIGNMENT_CHOICE_NONE = 0,
     TASKBAR_ALIGNMENT_CHOICE_CENTER,
     TASKBAR_ALIGNMENT_CHOICE_LEFT,
 };
+
+#define PM_TASKBAR_ALIGNMENT_SELECT        (WM_APP + 0x140)
+#define PM_TASKBAR_ALIGNMENT_SET_HOT       (WM_APP + 0x141)
+#define PM_TASKBAR_ALIGNMENT_CLOSE_SUBMENU (WM_APP + 0x142)
 
 struct TaskbarAlignmentMenuCreateInfo {
     TaskbarAlignmentMenuCreateInfo()
@@ -91,6 +101,49 @@ struct TaskbarAlignmentMenuCreateInfo {
     RECT    _main_panel_rect;
     RECT    _submenu_panel_rect;
 };
+
+struct TaskbarAlignmentSubmenuCreateInfo {
+    TaskbarAlignmentSubmenuCreateInfo()
+        : _owner(NULL),
+          _root(NULL),
+          _font(NULL),
+          _centered(true),
+          _hot_choice(TASKBAR_ALIGNMENT_CHOICE_CENTER),
+          _screen_rect()
+    {
+    }
+
+    HWND    _owner;
+    HWND    _root;
+    HFONT   _font;
+    bool    _centered;
+    TaskbarAlignmentChoice _hot_choice;
+    RECT    _screen_rect;
+};
+
+static HWND g_taskbar_alignment_menu_popup = NULL;
+
+static bool IsTaskbarAlignmentDismissMessage(UINT message)
+{
+    switch (message) {
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONUP:
+    case WM_NCLBUTTONDOWN:
+    case WM_NCLBUTTONUP:
+    case WM_NCRBUTTONDOWN:
+    case WM_NCRBUTTONUP:
+    case WM_NCMBUTTONDOWN:
+    case WM_NCMBUTTONUP:
+    case WM_CONTEXTMENU:
+        return true;
+    }
+
+    return false;
+}
 
 static bool RectHasArea(const RECT &rect)
 {
@@ -142,12 +195,23 @@ static BOOL ApplyBlurToPopupWindow(HWND hwnd, COLORREF color, BYTE alpha)
     if (!set_window_composition_attribute)
         return FALSE;
 
-    ACCENT_POLICY accent = { ACCENT_ENABLE_BLURBEHIND, 0, color | ((DWORD)alpha << 24), 0 };
+    ACCENT_POLICY accent = { ACCENT_ENABLE_ACRYLICBLURBEHIND, 0, color | ((DWORD)alpha << 24), 0 };
     WINDOWCOMPOSITIONATTRIBDATA data = { WCA_ACCENT_POLICY, &accent, sizeof(accent) };
-    return set_window_composition_attribute(hwnd, &data);
+    BOOL applied = set_window_composition_attribute(hwnd, &data);
+
+    if (!applied) {
+        accent.AccentState = ACCENT_ENABLE_BLURBEHIND;
+        applied = set_window_composition_attribute(hwnd, &data);
+    }
+
+    const int corner_preference = 2;
+    DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner_preference, sizeof(corner_preference));
+
+    return applied;
 }
 
-static void FillRoundedRectPrimitive(HDC hdc, const RECT &rect, COLORREF fill, int radius, COLORREF border = CLR_INVALID)
+static void FillRoundedRectPrimitive(HDC hdc, const RECT &rect, COLORREF fill, int radius, COLORREF border = CLR_INVALID,
+    BYTE fill_alpha = 255, BYTE border_alpha = 255)
 {
     if (!RectHasArea(rect))
         return;
@@ -159,11 +223,11 @@ static void FillRoundedRectPrimitive(HDC hdc, const RECT &rect, COLORREF fill, i
     Gdiplus::GraphicsPath path;
     taskbar_draw::AddRoundedRectPath(path, rect, max(1, radius / 2));
 
-    Gdiplus::SolidBrush brush(Gdiplus::Color(255, GetRValue(fill), GetGValue(fill), GetBValue(fill)));
+    Gdiplus::SolidBrush brush(Gdiplus::Color(fill_alpha, GetRValue(fill), GetGValue(fill), GetBValue(fill)));
     graphics.FillPath(&brush, &path);
 
     if (border != CLR_INVALID) {
-        Gdiplus::Pen pen(Gdiplus::Color(255, GetRValue(border), GetGValue(border), GetBValue(border)), 1.0f);
+        Gdiplus::Pen pen(Gdiplus::Color(border_alpha, GetRValue(border), GetGValue(border), GetBValue(border)), 1.0f);
         graphics.DrawPath(&pen, &path);
     }
 }
@@ -186,24 +250,27 @@ static void DrawChevronRightPrimitive(HDC hdc, const RECT &rect, COLORREF color)
 
 static void DrawCheckMarkPrimitive(HDC hdc, const RECT &rect, COLORREF color)
 {
-    HPEN pen = CreatePen(PS_SOLID, max(1, DPI_SX(2)), color);
-    HGDIOBJ old_pen = SelectObject(hdc, pen);
+    if (!RectHasArea(rect))
+        return;
+
+    Gdiplus::Graphics graphics(hdc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
 
     int width = rect.right - rect.left;
     int height = rect.bottom - rect.top;
-    int left = rect.left + max(1, width / 6);
-    int mid_x = rect.left + max(2, width / 2) - 1;
-    int right = rect.right - max(1, width / 6);
-    int top = rect.top + max(1, height / 4);
-    int mid_y = rect.top + max(2, height / 2) + 1;
-    int bottom = rect.bottom - max(2, height / 4);
+    Gdiplus::PointF points[3] = {
+        Gdiplus::PointF((Gdiplus::REAL)(rect.left + max(1, width / 6)), (Gdiplus::REAL)(rect.top + height * 0.58f)),
+        Gdiplus::PointF((Gdiplus::REAL)(rect.left + width * 0.44f), (Gdiplus::REAL)(rect.bottom - max(2, height / 5))),
+        Gdiplus::PointF((Gdiplus::REAL)(rect.right - max(1, width / 7)), (Gdiplus::REAL)(rect.top + height * 0.24f))
+    };
 
-    MoveToEx(hdc, left, mid_y, NULL);
-    LineTo(hdc, mid_x, bottom);
-    LineTo(hdc, right, top);
-
-    SelectObject(hdc, old_pen);
-    DeleteObject(pen);
+    Gdiplus::Pen pen(Gdiplus::Color(235, GetRValue(color), GetGValue(color), GetBValue(color)),
+        (Gdiplus::REAL)max(2, DPI_SX(2)));
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    pen.SetLineJoin(Gdiplus::LineJoinRound);
+    graphics.DrawLines(&pen, points, COUNTOF(points));
 }
 
 static int MeasurePopupLabelWidth(HFONT font, LPCTSTR text)
@@ -223,6 +290,21 @@ static int MeasurePopupLabelWidth(HFONT font, LPCTSTR text)
     SelectObject(screen_dc, old_font);
     ReleaseDC(NULL, screen_dc);
     return width;
+}
+
+static int GetPopupPanelPadding()
+{
+    return DPI_SX(4);
+}
+
+static int GetPopupPanelCornerRadius()
+{
+    return DPI_SX(16);
+}
+
+static int GetPopupHighlightCornerRadius()
+{
+    return DPI_SX(12);
 }
 
 static String GetPortableTaskbarAlignmentConfigPath()
@@ -250,6 +332,287 @@ static bool PersistTaskbarCentered(bool centered)
     return Save_JCfgFile(override_path, override_cfg);
 }
 
+struct TaskbarAlignmentSubmenuPopup : public Window {
+    typedef Window super;
+
+    TaskbarAlignmentSubmenuPopup(HWND hwnd, const TaskbarAlignmentSubmenuCreateInfo &info)
+        : super(hwnd),
+          _owner(info._owner),
+          _root(info._root),
+          _font(info._font ? info._font : g_Globals._hDefaultFont),
+          _centered(info._centered),
+          _hot_choice(info._hot_choice),
+          _tracking_mouse(false)
+    {
+        _panel_size = MeasurePanel(_font);
+    }
+
+    static WindowClass &GetWndClass()
+    {
+        static WindowClass s_wc(TEXT("ExplauncherTaskbarAlignmentSubmenu"), CS_HREDRAW | CS_VREDRAW);
+        s_wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        s_wc.hbrBackground = (HBRUSH)GetStockObject(NULL_BRUSH);
+        return s_wc;
+    }
+
+    static int GetPanelPadding()
+    {
+        return GetPopupPanelPadding();
+    }
+
+    static int GetItemHeight()
+    {
+        return DPI_SY(32);
+    }
+
+    static int GetItemGap()
+    {
+        return DPI_SY(2);
+    }
+
+    static SIZE MeasurePanel(HFONT font)
+    {
+        SIZE result = { DPI_SX(136), GetPanelPadding() * 2 + GetItemHeight() * 2 + GetItemGap() };
+        int center_width = MeasurePopupLabelWidth(font, TEXT("Centre"));
+        int left_width = MeasurePopupLabelWidth(font, TEXT("Left"));
+        result.cx = max(result.cx, max(center_width, left_width) + DPI_SX(52));
+        return result;
+    }
+
+    static HWND Show(HWND owner, HWND root, HFONT font, const RECT &screen_rect, bool centered, TaskbarAlignmentChoice hot_choice)
+    {
+        TaskbarAlignmentSubmenuCreateInfo info;
+        info._owner = owner;
+        info._root = root;
+        info._font = font;
+        info._centered = centered;
+        info._hot_choice = hot_choice;
+        info._screen_rect = screen_rect;
+
+        HWND hwnd = Window::Create(
+            WINDOW_CREATOR_INFO(TaskbarAlignmentSubmenuPopup, TaskbarAlignmentSubmenuCreateInfo),
+            &info,
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+            GetWndClass(),
+            TEXT(""),
+            WS_POPUP,
+            screen_rect.left,
+            screen_rect.top,
+            screen_rect.right - screen_rect.left,
+            screen_rect.bottom - screen_rect.top,
+            root);
+        if (hwnd) {
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            UpdateWindow(hwnd);
+        }
+        return hwnd;
+    }
+
+protected:
+    RECT GetPanelRect() const
+    {
+        return MakePopupRect(0, 0, _panel_size.cx, _panel_size.cy);
+    }
+
+    RECT GetChoiceRect(TaskbarAlignmentChoice choice) const
+    {
+        RECT panel_rect = GetPanelRect();
+        int index = (choice == TASKBAR_ALIGNMENT_CHOICE_LEFT) ? 1 : 0;
+        return MakePopupRect(panel_rect.left + GetPanelPadding(),
+            panel_rect.top + GetPanelPadding() + index * (GetItemHeight() + GetItemGap()),
+            (panel_rect.right - panel_rect.left) - GetPanelPadding() * 2,
+            GetItemHeight());
+    }
+
+    TaskbarAlignmentChoice GetCheckedChoice() const
+    {
+        return _centered ? TASKBAR_ALIGNMENT_CHOICE_CENTER : TASKBAR_ALIGNMENT_CHOICE_LEFT;
+    }
+
+    TaskbarAlignmentChoice HitTestChoice(POINT pt) const
+    {
+        RECT center_rect = GetChoiceRect(TASKBAR_ALIGNMENT_CHOICE_CENTER);
+        if (PtInRect(&center_rect, pt))
+            return TASKBAR_ALIGNMENT_CHOICE_CENTER;
+
+        RECT left_rect = GetChoiceRect(TASKBAR_ALIGNMENT_CHOICE_LEFT);
+        if (PtInRect(&left_rect, pt))
+            return TASKBAR_ALIGNMENT_CHOICE_LEFT;
+
+        return TASKBAR_ALIGNMENT_CHOICE_NONE;
+    }
+
+    void UpdateHotChoice(POINT pt)
+    {
+        TaskbarAlignmentChoice hot_choice = HitTestChoice(pt);
+
+        if (hot_choice != _hot_choice) {
+            _hot_choice = hot_choice;
+            InvalidateRect(_hwnd, NULL, FALSE);
+        }
+    }
+
+    void ApplyWindowRegion()
+    {
+        RECT panel_rect = GetPanelRect();
+        HRGN region = CreateRoundRectRgn(panel_rect.left,
+            panel_rect.top,
+            panel_rect.right + 1,
+            panel_rect.bottom + 1,
+            GetPopupPanelCornerRadius(),
+            GetPopupPanelCornerRadius());
+        if (region)
+            SetWindowRgn(_hwnd, region, TRUE);
+    }
+
+    void SelectChoice(TaskbarAlignmentChoice choice)
+    {
+        if (_root)
+            PostMessage(_root, PM_TASKBAR_ALIGNMENT_SELECT, choice, 0);
+    }
+
+    void Paint(HDC canvas)
+    {
+        COLORREF panel_fill = RGB(24, 28, 33);
+        COLORREF panel_border = RGB(236, 240, 244);
+        COLORREF item_hover_fill = RGB(255, 255, 255);
+        COLORREF item_text = RGB(239, 242, 245);
+        COLORREF check_color = RGB(245, 247, 249);
+
+        RECT panel_rect = GetPanelRect();
+        FillRoundedRectPrimitive(canvas, panel_rect, panel_fill, GetPopupPanelCornerRadius(), panel_border, 88, 52);
+
+        HFONT old_font = (HFONT)SelectObject(canvas, _font ? _font : g_Globals._hDefaultFont);
+        int old_bk_mode = SetBkMode(canvas, TRANSPARENT);
+        SetTextColor(canvas, item_text);
+
+        const TaskbarAlignmentChoice choices[] = {
+            TASKBAR_ALIGNMENT_CHOICE_CENTER,
+            TASKBAR_ALIGNMENT_CHOICE_LEFT,
+        };
+        const LPCTSTR labels[] = {
+            TEXT("Centre"),
+            TEXT("Left"),
+        };
+
+        for (int index = 0; index < COUNTOF(choices); ++index) {
+            TaskbarAlignmentChoice choice = choices[index];
+            RECT item_rect = GetChoiceRect(choice);
+            if (_hot_choice == choice)
+                FillRoundedRectPrimitive(canvas, item_rect, item_hover_fill, GetPopupHighlightCornerRadius(), CLR_INVALID, 34);
+
+            RECT check_rect = item_rect;
+            check_rect.left += DPI_SX(12);
+            check_rect.right = check_rect.left + DPI_SX(12);
+            check_rect.top += DPI_SY(9);
+            check_rect.bottom -= DPI_SY(9);
+
+            RECT text_rect = item_rect;
+            text_rect.left += DPI_SX(32);
+            text_rect.right -= DPI_SX(10);
+            DrawText(canvas, labels[index], -1, &text_rect,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+            if (GetCheckedChoice() == choice)
+                DrawCheckMarkPrimitive(canvas, check_rect, check_color);
+        }
+
+        SetBkMode(canvas, old_bk_mode);
+        SelectObject(canvas, old_font);
+    }
+
+    virtual LRESULT Init(LPCREATESTRUCT pcs)
+    {
+        UNREFERENCED_PARAMETER(pcs);
+        ApplyWindowRegion();
+        ApplyBlurToPopupWindow(_hwnd, RGB(24, 28, 33), 168);
+        return 0;
+    }
+
+    virtual LRESULT WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
+    {
+        switch (nmsg) {
+        case WM_ERASEBKGND:
+            return 1;
+
+        case WM_PAINT: {
+            BufferedPaintCanvas canvas(_hwnd);
+            Paint(canvas);
+            return 0;
+        }
+
+        case WM_SIZE:
+            ApplyWindowRegion();
+            return 0;
+
+        case WM_MOUSEMOVE: {
+            POINT pt = Point(lparam);
+            if (!_tracking_mouse) {
+                TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, _hwnd, 0 };
+                TrackMouseEvent(&tme);
+                _tracking_mouse = true;
+            }
+            UpdateHotChoice(pt);
+            return 0;
+        }
+
+        case WM_MOUSELEAVE:
+            _tracking_mouse = false;
+            _hot_choice = TASKBAR_ALIGNMENT_CHOICE_NONE;
+            InvalidateRect(_hwnd, NULL, FALSE);
+            return 0;
+
+        case WM_LBUTTONUP:
+        case WM_RBUTTONUP: {
+            TaskbarAlignmentChoice choice = HitTestChoice(Point(lparam));
+            if (choice != TASKBAR_ALIGNMENT_CHOICE_NONE)
+                SelectChoice(choice);
+            return 0;
+        }
+
+        case WM_KILLFOCUS:
+            if ((HWND)wparam != _root && (HWND)wparam != _owner)
+                DestroyWindow(_hwnd);
+            return 0;
+
+        case WM_KEYDOWN:
+            if (wparam == VK_ESCAPE) {
+                if (_root)
+                    PostMessage(_root, PM_TASKBAR_ALIGNMENT_CLOSE_SUBMENU, 0, 0);
+                return 0;
+            }
+            if (wparam == VK_RETURN) {
+                SelectChoice(_hot_choice != TASKBAR_ALIGNMENT_CHOICE_NONE ? _hot_choice : GetCheckedChoice());
+                return 0;
+            }
+            break;
+
+        case PM_TASKBAR_ALIGNMENT_SET_HOT:
+            _hot_choice = (TaskbarAlignmentChoice)wparam;
+            InvalidateRect(_hwnd, NULL, FALSE);
+            return 0;
+
+        case WM_DESTROY:
+            if (_root)
+                PostMessage(_root, PM_TASKBAR_ALIGNMENT_CLOSE_SUBMENU, (WPARAM)_hwnd, 0);
+            return 0;
+
+        case WM_NCHITTEST:
+            return HTCLIENT;
+        }
+
+        return super::WndProc(nmsg, wparam, lparam);
+    }
+
+    HWND    _owner;
+    HWND    _root;
+    HFONT   _font;
+    bool    _centered;
+    SIZE    _panel_size;
+    TaskbarAlignmentChoice _hot_choice;
+    bool    _tracking_mouse;
+};
+
 struct TaskbarAlignmentMenuPopup : public Window {
     typedef Window super;
 
@@ -260,21 +623,12 @@ struct TaskbarAlignmentMenuPopup : public Window {
           _centered(info._centered),
           _result(TASKBAR_ALIGNMENT_CHOICE_NONE),
           _hot_choice(info._centered ? TASKBAR_ALIGNMENT_CHOICE_CENTER : TASKBAR_ALIGNMENT_CHOICE_LEFT),
+          _tracking_mouse(false),
           _submenu_visible(false),
-          _tracking_mouse(false)
+          _submenu_hwnd(NULL),
+          _submenu_screen_rect(info._submenu_panel_rect)
     {
         _main_panel_size = MeasureMainPanel(_font);
-        _submenu_panel_size = MeasureSubmenuPanel(_font);
-
-        _main_panel_rect = RectHasArea(info._main_panel_rect)
-            ? info._main_panel_rect
-            : MakePopupRect(0, 0, _main_panel_size.cx, _main_panel_size.cy);
-        _submenu_panel_rect = RectHasArea(info._submenu_panel_rect)
-            ? info._submenu_panel_rect
-            : MakePopupRect(_main_panel_rect.right + GetPanelGap(),
-                _main_panel_rect.top,
-                _submenu_panel_size.cx,
-                _submenu_panel_size.cy);
     }
 
     static WindowClass &GetWndClass()
@@ -285,8 +639,39 @@ struct TaskbarAlignmentMenuPopup : public Window {
         return s_wc;
     }
 
+    static int GetPanelGap()
+    {
+        return DPI_SX(4);
+    }
+
+    static int GetItemHeight()
+    {
+        return DPI_SY(32);
+    }
+
+    static int GetPanelPadding()
+    {
+        return GetPopupPanelPadding();
+    }
+
+    static SIZE MeasureMainPanel(HFONT font)
+    {
+        SIZE result = { DPI_SX(168), GetItemHeight() + GetPanelPadding() * 2 };
+        int text_width = MeasurePopupLabelWidth(font, TEXT("Taskbar alignment"));
+        result.cx = max(result.cx, text_width + DPI_SX(60));
+        return result;
+    }
+
+    static SIZE MeasureSubmenuPanel(HFONT font)
+    {
+        return TaskbarAlignmentSubmenuPopup::MeasurePanel(font);
+    }
+
     static TaskbarAlignmentChoice Show(HWND owner, HFONT font, POINT screen_anchor, bool centered)
     {
+        if (g_taskbar_alignment_menu_popup && IsWindow(g_taskbar_alignment_menu_popup))
+            DestroyWindow(g_taskbar_alignment_menu_popup);
+
         TaskbarAlignmentMenuCreateInfo info;
         info._owner = owner;
         info._font = font;
@@ -302,7 +687,6 @@ struct TaskbarAlignmentMenuPopup : public Window {
 
         MONITORINFO monitor_info = { sizeof(monitor_info) };
         GetMonitorInfo(MonitorFromPoint(screen_anchor, MONITOR_DEFAULTTONEAREST), &monitor_info);
-
         ClampPopupRectToBounds(&main_panel_rect, monitor_info.rcWork);
 
         RECT submenu_panel_rect = MakePopupRect(
@@ -317,16 +701,9 @@ struct TaskbarAlignmentMenuPopup : public Window {
                 submenu_panel_size.cx,
                 submenu_panel_size.cy);
         }
-
         ClampPopupRectToBounds(&submenu_panel_rect, monitor_info.rcWork);
 
-        RECT window_rect = UnionPopupRects(main_panel_rect, submenu_panel_rect);
-        info._main_panel_rect = main_panel_rect;
-        OffsetRect(&info._main_panel_rect, -window_rect.left, -window_rect.top);
         info._submenu_panel_rect = submenu_panel_rect;
-        OffsetRect(&info._submenu_panel_rect, -window_rect.left, -window_rect.top);
-
-        RECT rect = window_rect;
 
         HWND hwnd = Window::Create(
             WINDOW_CREATOR_INFO(TaskbarAlignmentMenuPopup, TaskbarAlignmentMenuCreateInfo),
@@ -335,61 +712,30 @@ struct TaskbarAlignmentMenuPopup : public Window {
             GetWndClass(),
             TEXT(""),
             WS_POPUP,
-            rect.left,
-            rect.top,
-            rect.right - rect.left,
-            rect.bottom - rect.top,
+            main_panel_rect.left,
+            main_panel_rect.top,
+            main_panel_rect.right - main_panel_rect.left,
+            main_panel_rect.bottom - main_panel_rect.top,
             owner);
+        if (hwnd)
+            g_taskbar_alignment_menu_popup = hwnd;
         TaskbarAlignmentMenuPopup *popup = GET_WINDOW(TaskbarAlignmentMenuPopup, hwnd);
         return popup ? popup->ShowModal() : TASKBAR_ALIGNMENT_CHOICE_NONE;
     }
 
 protected:
-    static int GetPanelGap()
+    static bool IsPopupOrSubmenuTarget(HWND hwnd, HWND popup, HWND submenu)
     {
-        return DPI_SX(8);
-    }
+        if (!hwnd)
+            return false;
 
-    static int GetPanelPadding()
-    {
-        return DPI_SX(8);
-    }
-
-    static int GetItemHeight()
-    {
-        return DPI_SY(34);
-    }
-
-    static int GetItemGap()
-    {
-        return DPI_SY(4);
-    }
-
-    static SIZE MeasureMainPanel(HFONT font)
-    {
-        SIZE result = { DPI_SX(216), GetPanelPadding() * 2 + GetItemHeight() };
-        int text_width = MeasurePopupLabelWidth(font, TEXT("Taskbar alignment"));
-        result.cx = max(result.cx, text_width + DPI_SX(64));
-        return result;
-    }
-
-    static SIZE MeasureSubmenuPanel(HFONT font)
-    {
-        SIZE result = { DPI_SX(164), GetPanelPadding() * 2 + GetItemHeight() * 2 + GetItemGap() };
-        int center_width = MeasurePopupLabelWidth(font, TEXT("Centre"));
-        int left_width = MeasurePopupLabelWidth(font, TEXT("Left"));
-        result.cx = max(result.cx, max(center_width, left_width) + DPI_SX(60));
-        return result;
+        HWND root = GetAncestor(hwnd, GA_ROOT);
+        return root == popup || (submenu && root == submenu);
     }
 
     RECT GetMainPanelRect() const
     {
-        return _main_panel_rect;
-    }
-
-    RECT GetSubmenuPanelRect() const
-    {
-        return _submenu_panel_rect;
+        return MakePopupRect(0, 0, _main_panel_size.cx, _main_panel_size.cy);
     }
 
     RECT GetRootItemRect() const
@@ -401,167 +747,80 @@ protected:
             GetItemHeight());
     }
 
-    RECT GetChoiceRect(TaskbarAlignmentChoice choice) const
-    {
-        RECT panel_rect = GetSubmenuPanelRect();
-        int index = (choice == TASKBAR_ALIGNMENT_CHOICE_LEFT) ? 1 : 0;
-        return MakePopupRect(panel_rect.left + GetPanelPadding(),
-            panel_rect.top + GetPanelPadding() + index * (GetItemHeight() + GetItemGap()),
-            (panel_rect.right - panel_rect.left) - GetPanelPadding() * 2,
-            GetItemHeight());
-    }
-
     TaskbarAlignmentChoice GetCheckedChoice() const
     {
         return _centered ? TASKBAR_ALIGNMENT_CHOICE_CENTER : TASKBAR_ALIGNMENT_CHOICE_LEFT;
     }
 
-    TaskbarAlignmentChoice HitTestChoice(POINT pt) const
-    {
-        if (!_submenu_visible)
-            return TASKBAR_ALIGNMENT_CHOICE_NONE;
-
-        RECT center_rect = GetChoiceRect(TASKBAR_ALIGNMENT_CHOICE_CENTER);
-        if (PtInRect(&center_rect, pt))
-            return TASKBAR_ALIGNMENT_CHOICE_CENTER;
-
-        RECT left_rect = GetChoiceRect(TASKBAR_ALIGNMENT_CHOICE_LEFT);
-        if (PtInRect(&left_rect, pt))
-            return TASKBAR_ALIGNMENT_CHOICE_LEFT;
-
-        return TASKBAR_ALIGNMENT_CHOICE_NONE;
-    }
-
-    void UpdateHotChoice(POINT pt)
-    {
-        if (!_submenu_visible)
-            return;
-
-        TaskbarAlignmentChoice hot_choice = HitTestChoice(pt);
-        if (hot_choice == TASKBAR_ALIGNMENT_CHOICE_NONE)
-            hot_choice = GetCheckedChoice();
-
-        if (hot_choice != _hot_choice) {
-            _hot_choice = hot_choice;
-            InvalidateRect(_hwnd, NULL, FALSE);
-        }
-    }
-
-    void OpenSubmenu()
-    {
-        if (_submenu_visible)
-            return;
-
-        _submenu_visible = true;
-        ApplyWindowRegion();
-        InvalidateRect(_hwnd, NULL, FALSE);
-    }
-
     void ApplyWindowRegion()
     {
-        RECT main_panel_rect = GetMainPanelRect();
-        int corner = DPI_SX(16);
-
-        HRGN main_region = CreateRoundRectRgn(main_panel_rect.left,
-            main_panel_rect.top,
-            main_panel_rect.right + 1,
-            main_panel_rect.bottom + 1,
-            corner,
-            corner);
-
-        if (_submenu_visible) {
-            RECT submenu_panel_rect = GetSubmenuPanelRect();
-            HRGN submenu_region = CreateRoundRectRgn(submenu_panel_rect.left,
-                submenu_panel_rect.top,
-                submenu_panel_rect.right + 1,
-                submenu_panel_rect.bottom + 1,
-                corner,
-                corner);
-            HRGN combined_region = CreateRectRgn(0, 0, 0, 0);
-
-            if (main_region && submenu_region && combined_region) {
-                CombineRgn(combined_region, main_region, submenu_region, RGN_OR);
-                SetWindowRgn(_hwnd, combined_region, TRUE);
-            } else if (combined_region) {
-                DeleteObject(combined_region);
-            }
-
-            if (submenu_region)
-                DeleteObject(submenu_region);
-        } else if (main_region) {
-            SetWindowRgn(_hwnd, main_region, TRUE);
-            main_region = NULL;
-        }
-
-        if (main_region)
-            DeleteObject(main_region);
+        RECT panel_rect = GetMainPanelRect();
+        HRGN region = CreateRoundRectRgn(panel_rect.left,
+            panel_rect.top,
+            panel_rect.right + 1,
+            panel_rect.bottom + 1,
+            GetPopupPanelCornerRadius(),
+            GetPopupPanelCornerRadius());
+        if (region)
+            SetWindowRgn(_hwnd, region, TRUE);
     }
 
     void Paint(HDC canvas)
     {
-        COLORREF panel_fill = RGB(34, 37, 42);
-        COLORREF panel_border = RGB(91, 96, 102);
-        COLORREF item_hover_fill = RGB(72, 77, 84);
+        COLORREF panel_fill = RGB(24, 28, 33);
+        COLORREF panel_border = RGB(236, 240, 244);
+        COLORREF item_hover_fill = RGB(255, 255, 255);
         COLORREF item_text = RGB(239, 242, 245);
-        COLORREF check_color = RGB(172, 214, 255);
 
         RECT main_panel_rect = GetMainPanelRect();
-        FillRoundedRectPrimitive(canvas, main_panel_rect, panel_fill, DPI_SX(16), panel_border);
-
         RECT root_item_rect = GetRootItemRect();
-        FillRoundedRectPrimitive(canvas, root_item_rect, item_hover_fill, DPI_SX(10));
+        FillRoundedRectPrimitive(canvas, main_panel_rect, panel_fill, GetPopupPanelCornerRadius(), panel_border, 88, 52);
+
+        if (_submenu_visible)
+            FillRoundedRectPrimitive(canvas, root_item_rect, item_hover_fill, GetPopupHighlightCornerRadius(), CLR_INVALID, 34);
 
         HFONT old_font = (HFONT)SelectObject(canvas, _font ? _font : g_Globals._hDefaultFont);
         int old_bk_mode = SetBkMode(canvas, TRANSPARENT);
         SetTextColor(canvas, item_text);
 
-        RECT root_text_rect = root_item_rect;
-        root_text_rect.left += DPI_SX(14);
-        root_text_rect.right -= DPI_SX(24);
-        DrawText(canvas, TEXT("Taskbar alignment"), -1, &root_text_rect,
+        RECT text_rect = root_item_rect;
+        text_rect.left += DPI_SX(12);
+        text_rect.right -= DPI_SX(24);
+        DrawText(canvas, TEXT("Taskbar alignment"), -1, &text_rect,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
 
         RECT chevron_rect = root_item_rect;
-        chevron_rect.left = chevron_rect.right - DPI_SX(20);
+        chevron_rect.left = chevron_rect.right - DPI_SX(18);
         DrawChevronRightPrimitive(canvas, chevron_rect, item_text);
-
-        if (_submenu_visible) {
-            RECT submenu_panel_rect = GetSubmenuPanelRect();
-            FillRoundedRectPrimitive(canvas, submenu_panel_rect, panel_fill, DPI_SX(16), panel_border);
-
-            const TaskbarAlignmentChoice choices[] = {
-                TASKBAR_ALIGNMENT_CHOICE_CENTER,
-                TASKBAR_ALIGNMENT_CHOICE_LEFT,
-            };
-            const LPCTSTR labels[] = {
-                TEXT("Centre"),
-                TEXT("Left"),
-            };
-
-            for (int index = 0; index < COUNTOF(choices); ++index) {
-                TaskbarAlignmentChoice choice = choices[index];
-                RECT item_rect = GetChoiceRect(choice);
-                if (_hot_choice == choice)
-                    FillRoundedRectPrimitive(canvas, item_rect, item_hover_fill, DPI_SX(10));
-
-                RECT check_rect = item_rect;
-                check_rect.left += DPI_SX(10);
-                check_rect.right = check_rect.left + DPI_SX(12);
-                check_rect.top += DPI_SY(10);
-                check_rect.bottom -= DPI_SY(10);
-
-                RECT text_rect = item_rect;
-                text_rect.left += DPI_SX(30);
-                DrawText(canvas, labels[index], -1, &text_rect,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-
-                if (GetCheckedChoice() == choice)
-                    DrawCheckMarkPrimitive(canvas, check_rect, check_color);
-            }
-        }
 
         SetBkMode(canvas, old_bk_mode);
         SelectObject(canvas, old_font);
+    }
+
+    void CloseSubmenu()
+    {
+        HWND submenu = _submenu_hwnd;
+        _submenu_hwnd = NULL;
+        _submenu_visible = false;
+        if (submenu && IsWindow(submenu))
+            DestroyWindow(submenu);
+        InvalidateRect(_hwnd, NULL, FALSE);
+    }
+
+    void OpenSubmenu()
+    {
+        if (_submenu_hwnd && IsWindow(_submenu_hwnd))
+            return;
+
+        _submenu_hwnd = TaskbarAlignmentSubmenuPopup::Show(
+            _owner,
+            _hwnd,
+            _font,
+            _submenu_screen_rect,
+            _centered,
+            _hot_choice);
+        _submenu_visible = _submenu_hwnd != NULL;
+        InvalidateRect(_hwnd, NULL, FALSE);
     }
 
     TaskbarAlignmentChoice ShowModal()
@@ -570,13 +829,17 @@ protected:
         UpdateWindow(_hwnd);
         SetForegroundWindow(_hwnd);
         SetFocus(_hwnd);
-        SetCapture(_hwnd);
 
         MSG msg;
         while (IsWindow(_hwnd) && IsWindowVisible(_hwnd)) {
             if (!GetMessage(&msg, 0, 0, 0)) {
                 PostQuitMessage((int)msg.wParam);
                 break;
+            }
+
+            if (IsTaskbarAlignmentDismissMessage(msg.message) &&
+                !IsPopupOrSubmenuTarget(msg.hwnd, _hwnd, _submenu_hwnd)) {
+                CloseMenu(TASKBAR_ALIGNMENT_CHOICE_NONE);
             }
 
             try {
@@ -593,15 +856,13 @@ protected:
             }
         }
 
-        if (GetCapture() == _hwnd)
-            ReleaseCapture();
-
         return _result;
     }
 
     void CloseMenu(TaskbarAlignmentChoice result)
     {
         _result = result;
+        CloseSubmenu();
         if (IsWindow(_hwnd))
             DestroyWindow(_hwnd);
     }
@@ -610,7 +871,7 @@ protected:
     {
         UNREFERENCED_PARAMETER(pcs);
         ApplyWindowRegion();
-        ApplyBlurToPopupWindow(_hwnd, RGB(34, 37, 42), 220);
+        ApplyBlurToPopupWindow(_hwnd, RGB(24, 28, 33), 168);
         return 0;
     }
 
@@ -638,42 +899,38 @@ protected:
                 TrackMouseEvent(&tme);
                 _tracking_mouse = true;
             }
-            if (!_submenu_visible && PtInRect(&root_item_rect, pt))
+            if (PtInRect(&root_item_rect, pt))
                 OpenSubmenu();
-            UpdateHotChoice(pt);
             return 0;
         }
 
         case WM_MOUSELEAVE:
             _tracking_mouse = false;
-            if (_submenu_visible) {
-                _hot_choice = GetCheckedChoice();
-                InvalidateRect(_hwnd, NULL, FALSE);
-            }
             return 0;
 
         case WM_LBUTTONUP:
         case WM_RBUTTONUP: {
             POINT pt = Point(lparam);
             RECT root_item_rect = GetRootItemRect();
-            TaskbarAlignmentChoice choice = HitTestChoice(pt);
-            if (choice != TASKBAR_ALIGNMENT_CHOICE_NONE)
-                CloseMenu(choice);
-            else if (!_submenu_visible && PtInRect(&root_item_rect, pt))
+            if (PtInRect(&root_item_rect, pt))
                 OpenSubmenu();
             else
                 CloseMenu(TASKBAR_ALIGNMENT_CHOICE_NONE);
             return 0;
         }
 
-        case WM_CAPTURECHANGED:
-            if ((HWND)lparam != _hwnd)
+        case WM_KILLFOCUS:
+            if ((HWND)wparam != _owner && (HWND)wparam != _submenu_hwnd)
                 CloseMenu(TASKBAR_ALIGNMENT_CHOICE_NONE);
             return 0;
 
-        case WM_KILLFOCUS:
-            if ((HWND)wparam != _owner)
+        case WM_ACTIVATEAPP:
+            if (!wparam)
                 CloseMenu(TASKBAR_ALIGNMENT_CHOICE_NONE);
+            return 0;
+
+        case WM_CANCELMODE:
+            CloseMenu(TASKBAR_ALIGNMENT_CHOICE_NONE);
             return 0;
 
         case WM_KEYDOWN:
@@ -684,26 +941,42 @@ protected:
             case VK_RETURN:
                 if (!_submenu_visible) {
                     OpenSubmenu();
-                    return 0;
+                } else {
+                    CloseMenu(_hot_choice);
                 }
-                CloseMenu(_hot_choice);
                 return 0;
             case VK_RIGHT:
                 OpenSubmenu();
                 return 0;
             case VK_DOWN:
             case VK_UP:
-                if (!_submenu_visible)
-                    OpenSubmenu();
+                OpenSubmenu();
                 _hot_choice = (_hot_choice == TASKBAR_ALIGNMENT_CHOICE_CENTER)
                     ? TASKBAR_ALIGNMENT_CHOICE_LEFT
                     : TASKBAR_ALIGNMENT_CHOICE_CENTER;
-                InvalidateRect(_hwnd, NULL, FALSE);
+                if (_submenu_hwnd)
+                    PostMessage(_submenu_hwnd, PM_TASKBAR_ALIGNMENT_SET_HOT, _hot_choice, 0);
                 return 0;
             default:
                 break;
             }
             break;
+
+        case PM_TASKBAR_ALIGNMENT_SELECT:
+            CloseMenu((TaskbarAlignmentChoice)wparam);
+            return 0;
+
+        case PM_TASKBAR_ALIGNMENT_CLOSE_SUBMENU:
+            _submenu_hwnd = NULL;
+            _submenu_visible = false;
+            InvalidateRect(_hwnd, NULL, FALSE);
+            return 0;
+
+        case WM_DESTROY:
+            if (g_taskbar_alignment_menu_popup == _hwnd)
+                g_taskbar_alignment_menu_popup = NULL;
+            CloseSubmenu();
+            return 0;
 
         case WM_NCHITTEST:
             return HTCLIENT;
@@ -716,13 +989,12 @@ protected:
     HFONT   _font;
     bool    _centered;
     SIZE    _main_panel_size;
-    SIZE    _submenu_panel_size;
-    RECT    _main_panel_rect;
-    RECT    _submenu_panel_rect;
     TaskbarAlignmentChoice _result;
     TaskbarAlignmentChoice _hot_choice;
-    bool    _submenu_visible;
     bool    _tracking_mouse;
+    bool    _submenu_visible;
+    HWND    _submenu_hwnd;
+    RECT    _submenu_screen_rect;
 };
 
 
@@ -813,8 +1085,8 @@ static UINT GetStartButtonPngFrameCount(Gdiplus::Bitmap &source)
 
 static int GetStartButtonIconSize()
 {
-    int icon_size = TASKBAR_ICON_SIZE + DPI_SX(2);
-    int max_icon_size = DESKTOPBARBAR_HEIGHT - DPI_SY(10);
+    int icon_size = TASKBAR_ICON_SIZE + DPI_SX(3);
+    int max_icon_size = DESKTOPBARBAR_HEIGHT - DPI_SY(14);
 
     if (icon_size > max_icon_size)
         icon_size = max_icon_size;
@@ -989,7 +1261,7 @@ void DesktopBar::RefreshLayoutMetrics()
 
     int start_btn_width = DESKTOPBARBAR_HEIGHT + 8;
     if (_centered_layout)
-        start_btn_width = taskbar_draw::GetButtonSlotWidth();
+        start_btn_width = taskbar_draw::GetModernButtonSlotWidth();
 
     int start_btn_padding = JCFG2_DEF("JS_STARTMENU", "start_padding", 0).ToInt();
     Value configured_start_width = JCFG2("JS_STARTMENU", "start_width");

@@ -49,11 +49,37 @@ inline int GetButtonSlotWidth()
     if (configured > 0)
         return DPI_SX(configured);
 
-    int min_width = TASKBAR_ICON_SIZE + DPI_SX(12);
-    int fallback = DESKTOPBARBAR_HEIGHT - DPI_SX(4);
+    int min_width = TASKBAR_ICON_SIZE + DPI_SX(6);
+    int fallback = DESKTOPBARBAR_HEIGHT - DPI_SX(16);
     if (fallback < min_width)
         fallback = min_width;
     return fallback;
+}
+
+inline int GetModernButtonSlotWidth()
+{
+    int configured = JCFG2_DEF("JS_TASKBAR", "modern_button_width", 0).ToInt();
+    if (configured > 0) {
+        int configured_width = DPI_SX(configured);
+        if ((configured_width & 1) != 0 && configured_width > DPI_SX(30))
+            --configured_width;
+        return configured_width;
+    }
+
+    int preferred = DPI_SX(32);
+    int legacy_width = JCFG2_DEF("JS_TASKBAR", "button_width", 0).ToInt();
+    if (legacy_width > 0) {
+        int configured_width = DPI_SX(legacy_width);
+        if (configured_width < preferred)
+            preferred = configured_width;
+    }
+
+    int min_width = DPI_SX(30);
+    if (preferred < min_width)
+        preferred = min_width;
+    if ((preferred & 1) != 0 && preferred > min_width)
+        --preferred;
+    return preferred;
 }
 
 inline int GetQuickLaunchSlotWidth()

@@ -33,8 +33,12 @@ void PictureButton2::DrawItem(LPDRAWITEMSTRUCT dis)
     if (taskbar_draw::IsModernTaskbarEnabled()) {
         FillRect(dis->hDC, &dis->rcItem, _hBrush);
 
-        RECT highlight_rect = taskbar_draw::DeflateRectCopy(dis->rcItem, DPI_SX(2), DPI_SY(4));
-        highlight_rect.bottom -= DPI_SY(4);
+        RECT highlight_rect = {
+            dis->rcItem.left + DPI_SX(1),
+            dis->rcItem.top + DPI_SY(2),
+            dis->rcItem.right - DPI_SX(1),
+            dis->rcItem.bottom - DPI_SY(2)
+        };
         if (highlight_rect.bottom > highlight_rect.top) {
             if (_hovered) {
                 taskbar_draw::FillRoundedRect(

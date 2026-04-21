@@ -165,6 +165,7 @@ protected:
 /// create a bitmap from an icon
 extern HBITMAP create_bitmap_from_icon(HICON hIcon, HBRUSH hbrush_bkgnd, HDC hdc_wnd, int icon_size = ICON_SIZE_SMALL);
 extern HBITMAP create_bitmap_from_icon(HICON hIcon, HBRUSH hbrush_bkgnd, HDC hdc_wnd, int icon_size, RECT rect);
+extern BOOL draw_icon_high_quality(HDC hdc, HICON hIcon, const RECT &rect);
 
 /// add icon with alpha channel to imagelist using the specified background color
 extern int ImageList_AddAlphaIcon(HIMAGELIST himl, HICON hIcon, HBRUSH hbrush_bkgnd, HDC hdc_wnd);
