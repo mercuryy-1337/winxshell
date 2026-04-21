@@ -188,18 +188,138 @@ BOOL time_to_filetime(const time_t *t, FILETIME *ftime)
 }
 
 
-BOOL launch_file(HWND hwnd, LPCTSTR cmd, UINT nCmdShow, LPCTSTR parameters)
+static BOOL launch_file_shell_execute(HWND hwnd, LPCTSTR cmd, UINT nCmdShow, LPCTSTR parameters)
 {
-    CONTEXT("launch_file()");
-
     HINSTANCE hinst = ShellExecute(hwnd, NULL/*operation*/, cmd, parameters, NULL/*dir*/, nCmdShow);
 
-    if ((int)hinst <= 32) {
+    if ((INT_PTR)hinst <= 32) {
         display_error(hwnd, GetLastError());
         return FALSE;
     }
 
     return TRUE;
+}
+
+static bool IsPeaZipArchivePath(LPCTSTR path)
+{
+    return path && *path && PathMatchSpec(path,
+        TEXT("*.zip;*.7z;*.rar;*.tar;*.gz;*.tgz;*.bz2;*.tbz;*.xz;*.txz;*.cab;*.iso"));
+}
+
+static bool TryGetModuleDirectory(TCHAR *module_path, size_t path_count)
+{
+    if (!module_path || !path_count)
+        return false;
+
+    module_path[0] = TEXT('\0');
+
+    String configured_module_path = JVAR("JVAR_MODULEPATH").ToString();
+    if (!configured_module_path.empty()) {
+        lstrcpyn(module_path, configured_module_path.c_str(), (int)path_count);
+        return true;
+    }
+
+    if (!GetModuleFileName(NULL, module_path, (DWORD)path_count) || !module_path[0])
+        return false;
+
+    PathRemoveFileSpec(module_path);
+    return module_path[0] != TEXT('\0');
+}
+
+BOOL TryGetPeaZipPath(PTSTR peazip_path, size_t path_count)
+{
+    if (!peazip_path || !path_count)
+        return FALSE;
+
+    peazip_path[0] = TEXT('\0');
+
+    TCHAR module_path[MAX_PATH] = { 0 };
+    if (!TryGetModuleDirectory(module_path, COUNTOF(module_path)))
+        return FALSE;
+
+    TCHAR candidate[MAX_PATH] = { 0 };
+    if (!PathCombine(candidate, module_path, TEXT("..\\Explorer\\peazip.exe")))
+        return FALSE;
+
+    TCHAR canonical[MAX_PATH] = { 0 };
+    LPCTSTR resolved = candidate;
+    if (PathCanonicalize(canonical, candidate))
+        resolved = canonical;
+
+    if (!PathFileExists(resolved))
+        return FALSE;
+
+    lstrcpyn(peazip_path, resolved, (int)path_count);
+    return TRUE;
+}
+
+static bool TryGetPeaZipLaunchTarget(LPCTSTR cmd, LPCTSTR parameters, String &target_path)
+{
+    target_path.erase();
+
+    if (!cmd || !*cmd)
+        return false;
+
+    if (parameters && *parameters)
+        return false;
+
+    TCHAR expanded_cmd[MAX_PATH] = { 0 };
+    LPCTSTR resolved_cmd = cmd;
+    DWORD expanded_length = ExpandEnvironmentStrings(cmd, expanded_cmd, COUNTOF(expanded_cmd));
+    if (expanded_length > 0 && expanded_length < COUNTOF(expanded_cmd))
+        resolved_cmd = expanded_cmd;
+
+    TCHAR normalized_cmd[MAX_PATH] = { 0 };
+    lstrcpyn(normalized_cmd, resolved_cmd, COUNTOF(normalized_cmd));
+    PathUnquoteSpaces(normalized_cmd);
+
+    if (PathIsDirectory(normalized_cmd)) {
+        target_path = normalized_cmd;
+        return true;
+    }
+
+    if (PathFileExists(normalized_cmd) && IsPeaZipArchivePath(normalized_cmd)) {
+        target_path = normalized_cmd;
+        return true;
+    }
+
+    if (PathMatchSpec(normalized_cmd, TEXT("*.lnk"))) {
+        TCHAR shortcut_target[MAX_PATH] = { 0 };
+        GetShortcutPath(normalized_cmd, shortcut_target, COUNTOF(shortcut_target));
+        if (shortcut_target[0] && (PathIsDirectory(shortcut_target) ||
+            (PathFileExists(shortcut_target) && IsPeaZipArchivePath(shortcut_target)))) {
+            target_path = shortcut_target;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+BOOL launch_folder_with_peazip(HWND hwnd, LPCTSTR folder_path, UINT nCmdShow)
+{
+    if (!folder_path || !*folder_path)
+        return FALSE;
+
+    TCHAR peazip_path[MAX_PATH] = { 0 };
+    if (TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path))) {
+        String peazip_parameters = FmtString(TEXT("\"%s\""), folder_path);
+        return launch_file_shell_execute(hwnd, peazip_path, nCmdShow, peazip_parameters.c_str());
+    }
+
+    return launch_file_shell_execute(hwnd, folder_path, nCmdShow, NULL);
+}
+
+
+BOOL launch_file(HWND hwnd, LPCTSTR cmd, UINT nCmdShow, LPCTSTR parameters)
+{
+    CONTEXT("launch_file()");
+
+    String peazip_target;
+    if (TryGetPeaZipLaunchTarget(cmd, parameters, peazip_target))
+        return launch_folder_with_peazip(hwnd, peazip_target.c_str(), nCmdShow);
+
+    return launch_file_shell_execute(hwnd, cmd, nCmdShow, parameters);
 }
 
 #ifdef UNICODE

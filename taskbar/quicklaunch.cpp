@@ -46,8 +46,13 @@ extern bool IsThumbnailCursorInRegion();
 
 static String ResolveQuickLaunchEntryAppKey(Entry *entry, int id)
 {
-    if (id == ID_EXPLORE)
+    if (id == ID_EXPLORE) {
+        String peazip_key = taskbar_identity::GetPeaZipAppKey();
+        if (!peazip_key.empty())
+            return peazip_key;
+
         return taskbar_identity::GetExplorerAppKey();
+    }
 
     if (!entry)
         return String();
@@ -309,7 +314,16 @@ void QuickLaunchBar::AddShortcuts()
         AddButton(ID_MINIMIZE_ALL, g_Globals._icon_cache.get_icon(ICID_MINIMIZE).create_bitmap(bk_color, bk_brush, canvas, TASKBAR_ICON_SIZE, rect), ResString(IDS_MINIMIZE_ALL), NULL);
     }
     if (bHideFileExplorer != 1) {
-        AddButton(ID_EXPLORE, g_Globals._icon_cache.get_icon(ICID_EXPLORER).create_bitmap(bk_color, bk_brush, canvas, TASKBAR_ICON_SIZE, rect), ResString(IDS_TITLE), NULL);
+        TCHAR peazip_path[MAX_PATH] = { 0 };
+        if (TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path))) {
+            const Icon &icon = g_Globals._icon_cache.extract(peazip_path, ICF_LARGE | ICF_NOLINKOVERLAY);
+            HBITMAP hbmp = ((ICON_ID)icon != ICID_NONE && (ICON_ID)icon != ICID_UNKNOWN) ?
+                icon.create_bitmap(bk_color, bk_brush, canvas, TASKBAR_ICON_SIZE, rect) :
+                g_Globals._icon_cache.get_icon(ICID_APP).create_bitmap(bk_color, bk_brush, canvas, TASKBAR_ICON_SIZE, rect);
+            AddButton(ID_EXPLORE, hbmp, TEXT("PeaZip"), NULL);
+        } else {
+            AddButton(ID_EXPLORE, g_Globals._icon_cache.get_icon(ICID_EXPLORER).create_bitmap(bk_color, bk_brush, canvas, TASKBAR_ICON_SIZE, rect), ResString(IDS_TITLE), NULL);
+        }
     }
 
     if (_fixed_btn != 0 && bHideFixedSep != 1) {
@@ -576,6 +590,14 @@ default: def:
 int QuickLaunchBar::Command(int id, int code)
 {
     CONTEXT("QuickLaunchBar::Command()");
+
+    if (id == ID_EXPLORE) {
+        TCHAR peazip_path[MAX_PATH] = { 0 };
+        if (TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path))) {
+            launch_file(_hwnd, peazip_path, SW_SHOWNORMAL);
+            return 0;
+        }
+    }
 
     QuickLaunchMap::iterator found = _entries.find(id);
     if (found != _entries.end()) {

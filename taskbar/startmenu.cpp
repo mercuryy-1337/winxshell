@@ -3435,20 +3435,32 @@ void StartMenuRoot::AddFallbackProgramItems()
         int id;
         String title;
         ICON_ID icon_id;
+        String path;
+        bool is_command;
     };
 
     vector<FallbackItem> fallback_items;
-    fallback_items.push_back(FallbackItem{ IDC_EXPLORE, ResString(IDS_EXPLORE), ICID_EXPLORER });
-    fallback_items.push_back(FallbackItem{ IDC_SETTINGS, ResString(IDS_SETTINGS), ICID_CONFIG });
-    fallback_items.push_back(FallbackItem{ IDC_LAUNCH, ResString(IDS_LAUNCH), ICID_ACTION });
+    TCHAR peazip_path[MAX_PATH] = { 0 };
+    if (TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path))) {
+        ICON_ID peazip_icon_id = (ICON_ID)g_Globals._icon_cache.extract(peazip_path, ICF_LARGE | ICF_NOLINKOVERLAY);
+        if (peazip_icon_id == ICID_NONE)
+            peazip_icon_id = ICID_APP;
+        fallback_items.push_back(FallbackItem{ IDC_EXPLORE, TEXT("PeaZip"), peazip_icon_id, peazip_path, false });
+    } else {
+        fallback_items.push_back(FallbackItem{ IDC_EXPLORE, ResString(IDS_EXPLORE), ICID_EXPLORER, TEXT(""), true });
+    }
+    fallback_items.push_back(FallbackItem{ IDC_SETTINGS, ResString(IDS_SETTINGS), ICID_CONFIG, TEXT(""), true });
+    fallback_items.push_back(FallbackItem{ IDC_LAUNCH, ResString(IDS_LAUNCH), ICID_ACTION, TEXT(""), true });
 
     for (size_t index = 0; index < fallback_items.size() && _program_items.size() < 8; ++index) {
         if (!ModernStartMenuHasTitle(_program_items, fallback_items[index].title.c_str())) {
-            _program_items.push_back(ModernStartMenuItem(fallback_items[index].id,
+            ModernStartMenuItem item(fallback_items[index].id,
                 fallback_items[index].title.c_str(),
                 fallback_items[index].icon_id,
                 NULL,
-                true));
+                fallback_items[index].is_command);
+            item._path = fallback_items[index].path;
+            _program_items.push_back(item);
         }
     }
 }
@@ -3664,9 +3676,10 @@ bool StartMenuRoot::ExecuteItem(const ModernStartMenuItem &item)
         return true;
     }
 
-    if (!item._path.empty()) {
+    String resolved_path;
+    if (TryResolveStartMenuItemPath(item, resolved_path)) {
         CloseStartMenu(item._id);
-        return launch_file(_hwnd, item._path.c_str()) ? true : false;
+        return launch_file(_hwnd, resolved_path.c_str()) ? true : false;
     }
 
     ShellEntryMap::const_iterator found = _entries.find(item._id);
@@ -5505,7 +5518,13 @@ int StartMenuHandler::Command(int id, int code)
 
     case IDC_EXPLORE:
         CloseStartMenu(id);
-        explorer_show_frame(SW_SHOWNORMAL);
+        {
+            TCHAR peazip_path[MAX_PATH] = { 0 };
+            if (TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path)))
+                launch_file(_hwnd, peazip_path, SW_SHOWNORMAL);
+            else
+                explorer_show_frame(SW_SHOWNORMAL);
+        }
         break;
 
     case IDC_LAUNCH:

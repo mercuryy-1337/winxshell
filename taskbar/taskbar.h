@@ -139,6 +139,8 @@ protected:
     void    ApplyBackgroundStyle();
     void    LoadPinnedEntries();
     void    LaunchEntry(TaskBarMap::iterator it);
+    String  ResolvePinnedLaunchAppKey(LPCTSTR process_path) const;
+    void    MergePinnedProcessMatches();
     HBITMAP CreateEntryBitmap(const TaskBarEntry &entry);
     void    Refresh();
     void    ResizeButtons();

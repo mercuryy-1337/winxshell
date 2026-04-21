@@ -91,6 +91,12 @@ inline bool IsExplorerProcessPath(LPCTSTR path)
     return !_tcsicmp(explorer_path.c_str(), path);
 }
 
+inline bool IsPeaZipProcessPath(LPCTSTR path)
+{
+    return PathMatchesFileName(path, TEXT("peazip.exe")) ||
+        PathMatchesFileName(path, TEXT("pea.exe"));
+}
+
 inline bool IsHostedProcessPath(LPCTSTR path)
 {
     return PathMatchesFileName(path, TEXT("ApplicationFrameHost.exe")) ||
@@ -188,6 +194,20 @@ inline String GetExplorerAppKey()
     String explorer_path = windows_dir;
     explorer_path += TEXT("\\explorer.exe");
     return MakePathKey(explorer_path.c_str());
+}
+
+inline String GetExplorerAppIdKey()
+{
+    return MakeAppIdKey(TEXT("Microsoft.Windows.Explorer"));
+}
+
+inline String GetPeaZipAppKey()
+{
+    TCHAR peazip_path[MAX_PATH] = { 0 };
+    if (!TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path)))
+        return String();
+
+    return MakePathKey(peazip_path);
 }
 
 inline String GetShortcutAppKey(LPCTSTR path)

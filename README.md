@@ -2,7 +2,7 @@
 
 Explauncher is a native Win32 shell replacement and launcher for Windows. It combines a desktop shell, taskbar, start menu, search experience, Lua scripting support, and a packaged theme/UI system in a single C++ codebase.
 
-This repository is the rebranded Explauncher line and the current public app version is 1.0.1.
+This repository is the rebranded Explauncher line and the current public app version is 1.0.2.
 
 ## What Explauncher includes
 
@@ -69,10 +69,12 @@ Preferred rebranded runtime files now live in the release theme package:
 
 The codebase still contains compatibility fallbacks for earlier WinXShell names in several places so older deployments do not break immediately.
 
-## Notable 1.0.1 changes
+## Notable 1.0.2 changes
 
-- Rebased visible product versioning to `1.0.1` for the Explauncher line.
-- Added blurred right-click object menus in the modern start menu with `Open`, `Open with`, `Copy`, and `Copy path` actions.
+- Rebased visible product versioning to `1.0.2` for the Explauncher line.
+- File-system folders and archive files such as `.zip` now launch the packaged `../Explorer/peazip.exe` binary and pass the selected path as the argument.
+- Replaced the modern start menu and taskbar Explorer-style fallback pins with `PeaZip` when the packaged binary is present.
+- Added blurred right-click object menus in the modern start menu with `Open`, `Copy`, and `Copy path` actions.
 - Improved search-result icon resolution for file paths and executable targets.
 - Improved result grouping and spacing for the focused folder entry in path-search mode.
 - Updated release theme package naming and documentation to the Explauncher brand.

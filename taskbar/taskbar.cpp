@@ -40,6 +40,8 @@
 #pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "dwmapi.lib")
 
+extern HRESULT CreateShortcut(PTSTR lnk, PTSTR target, PTSTR param, PTSTR icon, int iIcon, int iShowCmd);
+
 
 DynamicFct<BOOL (WINAPI *)(HWND hwnd)> g_SetTaskmanWindow(TEXT("user32"), "SetTaskmanWindow");
 DynamicFct<BOOL (WINAPI *)(HWND hwnd)> g_RegisterShellHookWindow(TEXT("user32"), "RegisterShellHookWindow");
@@ -104,11 +106,16 @@ static String ResolvePinnedAlias(const map<String, String> &aliases, const Strin
     if (key.empty())
         return key;
 
-    map<String, String>::const_iterator found = aliases.find(key);
-    if (found != aliases.end() && !found->second.empty())
-        return found->second;
+    String resolved = key;
+    for (int guard = 0; guard < 8; ++guard) {
+        map<String, String>::const_iterator found = aliases.find(resolved);
+        if (found == aliases.end() || found->second.empty() || found->second == resolved)
+            break;
 
-    return key;
+        resolved = found->second;
+    }
+
+    return resolved;
 }
 
 static void RegisterPinnedAlias(map<String, String> &aliases, const String &canonical_key, const String &alias_key)
@@ -131,8 +138,50 @@ static String GetPinnedShortcutDisplayName(LPCTSTR path)
     return display_name;
 }
 
-static bool IsExplorerPinnedShortcut(LPCTSTR shortcut_path, const String &pin_title, LPCTSTR target_path)
+static bool IsPeaZipPath(LPCTSTR path)
 {
+    if (!path || !*path)
+        return false;
+
+    TCHAR peazip_path[MAX_PATH] = { 0 };
+    return TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path)) && !_tcsicmp(path, peazip_path);
+}
+
+static String ResolvePeaZipFamilyAppKey(LPCTSTR path)
+{
+    if (!path || !*path || !taskbar_identity::IsPeaZipProcessPath(path))
+        return String();
+
+    String peazip_app_key = taskbar_identity::GetPeaZipAppKey();
+    if (!peazip_app_key.empty())
+        return peazip_app_key;
+
+    return taskbar_identity::MakePathKey(path);
+}
+
+static bool TryRewritePinnedShortcutToPeaZip(LPCTSTR shortcut_path, LPCTSTR peazip_path)
+{
+    if (!shortcut_path || !*shortcut_path || !peazip_path || !*peazip_path)
+        return false;
+
+    TCHAR shortcut_copy[MAX_PATH] = { 0 };
+    TCHAR target_copy[MAX_PATH] = { 0 };
+    TCHAR icon_copy[MAX_PATH] = { 0 };
+    lstrcpyn(shortcut_copy, shortcut_path, COUNTOF(shortcut_copy));
+    lstrcpyn(target_copy, peazip_path, COUNTOF(target_copy));
+    lstrcpyn(icon_copy, peazip_path, COUNTOF(icon_copy));
+
+    return SUCCEEDED(CreateShortcut(shortcut_copy, target_copy, NULL, icon_copy, 0, SW_SHOWNORMAL));
+}
+
+static bool IsExplorerPinnedShortcut(LPCTSTR shortcut_path, const String &pin_title, LPCTSTR target_path, const String &shortcut_app_id)
+{
+    if (IsPeaZipPath(target_path))
+        return false;
+
+    if (!shortcut_app_id.empty() && shortcut_app_id == taskbar_identity::GetExplorerAppIdKey())
+        return true;
+
     if (target_path && *target_path && taskbar_identity::IsExplorerProcessPath(target_path))
         return true;
 
@@ -140,13 +189,127 @@ static bool IsExplorerPinnedShortcut(LPCTSTR shortcut_path, const String &pin_ti
         LPCTSTR file_name = PathFindFileName(shortcut_path);
         if (file_name) {
             if (!_tcsicmp(file_name, TEXT("File Explorer.lnk")) ||
-                !_tcsicmp(file_name, TEXT("Explorer.lnk")))
+                !_tcsicmp(file_name, TEXT("Explorer.lnk")) ||
+                !_tcsicmp(file_name, TEXT("My Computer.lnk")) ||
+                !_tcsicmp(file_name, TEXT("Computer.lnk")) ||
+                !_tcsicmp(file_name, TEXT("This PC.lnk")))
                 return true;
         }
     }
 
     String explorer_title = ResString(IDS_TITLE);
-    return !pin_title.empty() && !_tcsicmp(pin_title.c_str(), explorer_title.c_str());
+    return !pin_title.empty() && (
+        !_tcsicmp(pin_title.c_str(), explorer_title.c_str()) ||
+        !_tcsicmp(pin_title.c_str(), TEXT("Explorer")) ||
+        !_tcsicmp(pin_title.c_str(), TEXT("File Explorer")) ||
+        !_tcsicmp(pin_title.c_str(), TEXT("My Computer")) ||
+        !_tcsicmp(pin_title.c_str(), TEXT("Computer")) ||
+        !_tcsicmp(pin_title.c_str(), TEXT("This PC")));
+}
+
+static String GetPinnedEntryLaunchPathKey(const TaskBarEntry &entry)
+{
+    if (entry._launch_kind != TASKBAR_LAUNCH_SHORTCUT || entry._launch_path.empty())
+        return String();
+
+    if (PathMatchSpec(entry._launch_path.c_str(), TEXT("*.lnk"))) {
+        TCHAR target_path[MAX_PATH] = { 0 };
+        GetShortcutPath(entry._launch_path.c_str(), target_path, COUNTOF(target_path));
+        if (!target_path[0])
+            return String();
+
+        String peazip_key = ResolvePeaZipFamilyAppKey(target_path);
+        if (!peazip_key.empty())
+            return peazip_key;
+
+        return taskbar_identity::MakePathKey(target_path);
+    }
+
+    String peazip_key = ResolvePeaZipFamilyAppKey(entry._launch_path.c_str());
+    if (!peazip_key.empty())
+        return peazip_key;
+
+    return taskbar_identity::MakePathKey(entry._launch_path.c_str());
+}
+
+String TaskBar::ResolvePinnedLaunchAppKey(LPCTSTR process_path) const
+{
+    if (!process_path || !*process_path)
+        return String();
+
+    String process_key = ResolvePeaZipFamilyAppKey(process_path);
+    if (process_key.empty())
+        process_key = taskbar_identity::MakePathKey(process_path);
+
+    if (process_key.empty())
+        return String();
+
+    for (TaskBarMap::const_iterator it = _map.begin(); it != _map.end(); ++it) {
+        const TaskBarEntry &entry = it->second;
+        if (!entry._pinned)
+            continue;
+
+        String launch_key = GetPinnedEntryLaunchPathKey(entry);
+        if (!launch_key.empty() && launch_key == process_key)
+            return entry._app_key;
+    }
+
+    return String();
+}
+
+void TaskBar::MergePinnedProcessMatches()
+{
+    for (TaskBarMap::iterator it = _map.begin(); it != _map.end(); ++it) {
+        TaskBarEntry &entry = it->second;
+        if (!entry._used || entry._pinned || entry._windows.empty())
+            continue;
+
+        String pinned_app_key;
+        for (size_t index = 0; index < entry._windows.size(); ++index) {
+            TCHAR process_path[MAX_PATH] = { 0 };
+            if (!taskbar_identity::GetWindowProcessPath(entry._windows[index], process_path, COUNTOF(process_path)))
+                continue;
+
+            pinned_app_key = ResolvePinnedLaunchAppKey(process_path);
+            if (!pinned_app_key.empty())
+                break;
+        }
+
+        if (pinned_app_key.empty() || pinned_app_key == it->first)
+            continue;
+
+        TaskBarMap::iterator pinned_found = _map.find(pinned_app_key);
+        if (pinned_found == _map.end())
+            continue;
+
+        TaskBarEntry &pinned_entry = pinned_found->second;
+        pinned_entry._used += entry._used;
+        pinned_entry._pinned = true;
+
+        if ((entry._fsState & (TBSTATE_PRESSED | TBSTATE_CHECKED)) != 0)
+            pinned_entry._fsState = entry._fsState;
+
+        if ((!pinned_entry._primary_hwnd || !IsWindow(pinned_entry._primary_hwnd)) &&
+            entry._primary_hwnd && IsWindow(entry._primary_hwnd)) {
+            pinned_entry._primary_hwnd = entry._primary_hwnd;
+        }
+
+        if (pinned_entry._title.empty() && !entry._title.empty())
+            pinned_entry._title = entry._title;
+        if (pinned_entry._pid == 0)
+            pinned_entry._pid = entry._pid;
+
+        for (size_t window_index = 0; window_index < entry._windows.size(); ++window_index)
+            pinned_entry._windows.push_back(entry._windows[window_index]);
+
+        pinned_entry._window_group_count = (int)pinned_entry._windows.size();
+
+        entry._used = 0;
+        entry._window_group_count = 0;
+        entry._primary_hwnd = 0;
+        entry._fsState = TBSTATE_ENABLED;
+        entry._windows.clear();
+    }
 }
 
 static bool IsExcludedTaskbarClass(LPCTSTR class_name)
@@ -827,6 +990,15 @@ void TaskBar::LaunchEntry(TaskBarMap::iterator it)
         return;
 
     const TaskBarEntry &entry = it->second;
+    String peazip_app_key = taskbar_identity::GetPeaZipAppKey();
+    if (!peazip_app_key.empty() && entry._app_key == peazip_app_key) {
+        TCHAR peazip_path[MAX_PATH] = { 0 };
+        if (TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path))) {
+            launch_file(_hwnd, peazip_path, SW_SHOWNORMAL);
+            return;
+        }
+    }
+
     if (entry._launch_kind == TASKBAR_LAUNCH_EXPLORER) {
         explorer_open_frame(SW_SHOWNORMAL, NULL, EXPLORER_OPEN_QUICKLAUNCH);
     } else if (entry._launch_kind == TASKBAR_LAUNCH_SHORTCUT && !entry._launch_path.empty()) {
@@ -939,7 +1111,16 @@ static HBITMAP TryCreateEntryBitmapFromPath(HWND hwndToolbar, LPCTSTR path, cons
 
     const Icon &icon = g_Globals._icon_cache.extract(path, ICF_LARGE | ICF_NOLINKOVERLAY);
     if ((ICON_ID)icon == ICID_NONE || (ICON_ID)icon == ICID_UNKNOWN)
-        return 0;
+    {
+        SHFILEINFO sfi = { 0 };
+        if (!SHGetFileInfo(path, 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_LARGEICON) || !sfi.hIcon)
+            return 0;
+
+        WindowCanvas canvas(hwndToolbar);
+        HBITMAP hbmp = create_bitmap_from_icon(sfi.hIcon, TASKBAR_BRUSH(), canvas, TASKBAR_ICON_SIZE, rect);
+        DestroyIcon(sfi.hIcon);
+        return hbmp;
+    }
 
     WindowCanvas canvas(hwndToolbar);
     return icon.create_bitmap(TASKBAR_TEXTCOLOR(), TASKBAR_BRUSH(), canvas, TASKBAR_ICON_SIZE, rect);
@@ -949,6 +1130,16 @@ HBITMAP TaskBar::CreateEntryBitmap(const TaskBarEntry &entry)
 {
     RECT rect = _icon_area;
     WindowCanvas canvas(_htoolbar);
+
+    String peazip_app_key = taskbar_identity::GetPeaZipAppKey();
+    if (!peazip_app_key.empty() && entry._app_key == peazip_app_key) {
+        TCHAR peazip_path[MAX_PATH] = { 0 };
+        if (TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path))) {
+            HBITMAP peazip_bitmap = TryCreateEntryBitmapFromPath(_htoolbar, peazip_path, rect);
+            if (peazip_bitmap)
+                return peazip_bitmap;
+        }
+    }
 
     if (entry._launch_kind == TASKBAR_LAUNCH_EXPLORER) {
         return g_Globals._icon_cache.get_icon(ICID_EXPLORER).create_bitmap(
@@ -1058,8 +1249,25 @@ BOOL CALLBACK TaskBar::EnumWndProc(HWND hwnd, LPARAM lparam)
             return TRUE;
         }
 
-        String app_key = taskbar_identity::GetWindowAppKey(hwnd);
-        app_key = ResolvePinnedAlias(pThis->_pinned_aliases, app_key);
+        TCHAR process_path[MAX_PATH] = { 0 };
+        bool has_process_path = taskbar_identity::GetWindowProcessPath(hwnd, process_path, COUNTOF(process_path));
+
+        String raw_window_app_key = taskbar_identity::GetWindowAppKey(hwnd);
+        String app_key = raw_window_app_key;
+        String peazip_process_key;
+        String pinned_process_key;
+        if (has_process_path) {
+            peazip_process_key = ResolvePeaZipFamilyAppKey(process_path);
+            if (!peazip_process_key.empty())
+                app_key = peazip_process_key;
+
+            pinned_process_key = pThis->ResolvePinnedLaunchAppKey(process_path);
+            if (!pinned_process_key.empty())
+                app_key = pinned_process_key;
+        }
+        String aliased_app_key = ResolvePinnedAlias(pThis->_pinned_aliases, app_key);
+
+        app_key = aliased_app_key;
         if (app_key.empty())
             return TRUE;
 
@@ -1159,18 +1367,28 @@ void TaskBar::LoadPinnedEntries()
     _pinned_app_keys.clear();
     _pinned_aliases.clear();
 
+    TCHAR peazip_path[MAX_PATH] = { 0 };
+    bool has_peazip = TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path)) != FALSE;
+    String peazip_app_key = has_peazip ? taskbar_identity::GetPeaZipAppKey() : String();
+
+    if (!peazip_app_key.empty()) {
+        RegisterPinnedAlias(_pinned_aliases, peazip_app_key, taskbar_identity::GetExplorerAppKey());
+        RegisterPinnedAlias(_pinned_aliases, peazip_app_key, taskbar_identity::GetExplorerAppIdKey());
+    }
+
     if (!JCFG2_DEF("JS_QUICKLAUNCH", "hide_fileexplorer", false).ToBool()) {
-        String app_key = taskbar_identity::GetExplorerAppKey();
+        String app_key = !peazip_app_key.empty() ? peazip_app_key : taskbar_identity::GetExplorerAppKey();
         if (!app_key.empty()) {
             TaskBarEntry &entry = _map[app_key];
             entry._app_key = app_key;
             entry._pinned = true;
-            entry._pin_title = ResString(IDS_TITLE);
+            entry._pin_title = !peazip_app_key.empty() ? TEXT("PeaZip") : ResString(IDS_TITLE);
             entry._title = entry._pin_title;
-            entry._launch_path = TEXT("");
-            entry._launch_kind = TASKBAR_LAUNCH_EXPLORER;
+            entry._launch_path = !peazip_app_key.empty() ? peazip_path : TEXT("");
+            entry._launch_kind = !peazip_app_key.empty() ? TASKBAR_LAUNCH_SHORTCUT : TASKBAR_LAUNCH_EXPLORER;
             _pinned_app_keys.insert(app_key);
-            RegisterPinnedAlias(_pinned_aliases, app_key, taskbar_identity::MakeAppIdKey(TEXT("Microsoft.Windows.Explorer")));
+            if (peazip_app_key.empty())
+                RegisterPinnedAlias(_pinned_aliases, app_key, taskbar_identity::MakeAppIdKey(TEXT("Microsoft.Windows.Explorer")));
             if (!HasVisibleOrderKey(_visible_order, app_key))
                 _visible_order.push_back(app_key);
         }
@@ -1210,9 +1428,32 @@ void TaskBar::LoadPinnedEntries()
         String target_path_key;
         if (target_path[0])
             target_path_key = taskbar_identity::MakePathKey(target_path);
+        String peazip_target_key = ResolvePeaZipFamilyAppKey(target_path);
 
-        if (IsExplorerPinnedShortcut(shortcut_path.c_str(), pin_title, target_path))
-            app_key = taskbar_identity::GetExplorerAppKey();
+        String original_shortcut_path_key = shortcut_path_key;
+        String original_shortcut_app_id = shortcut_app_id;
+        String original_target_path_key = target_path_key;
+
+        if (IsExplorerPinnedShortcut(shortcut_path.c_str(), pin_title, target_path, shortcut_app_id)) {
+            if (!peazip_app_key.empty()) {
+                TryRewritePinnedShortcutToPeaZip(shortcut_path.c_str(), peazip_path);
+
+                app_key = taskbar_identity::GetShortcutAppKey(shortcut_path.c_str());
+                pin_title = TEXT("PeaZip");
+                shortcut_path_key = taskbar_identity::MakePathKey(shortcut_path.c_str());
+                shortcut_app_id = taskbar_identity::ReadShortcutAppId(shortcut_path.c_str());
+                GetShortcutPath(shortcut_path.c_str(), target_path, COUNTOF(target_path));
+                target_path_key = target_path[0] ? taskbar_identity::MakePathKey(target_path) : String();
+
+                if (app_key.empty())
+                    app_key = peazip_app_key;
+            } else {
+                app_key = taskbar_identity::GetExplorerAppKey();
+            }
+        }
+
+        if (!peazip_target_key.empty())
+            app_key = peazip_target_key;
 
         app_key = ResolvePinnedAlias(_pinned_aliases, app_key);
         shortcut_path_key = ResolvePinnedAlias(_pinned_aliases, shortcut_path_key);
@@ -1225,6 +1466,9 @@ void TaskBar::LoadPinnedEntries()
             continue;
 
         if (_pinned_app_keys.find(app_key) != _pinned_app_keys.end()) {
+            RegisterPinnedAlias(_pinned_aliases, app_key, original_shortcut_path_key);
+            RegisterPinnedAlias(_pinned_aliases, app_key, original_shortcut_app_id);
+            RegisterPinnedAlias(_pinned_aliases, app_key, original_target_path_key);
             RegisterPinnedAlias(_pinned_aliases, app_key, shortcut_path_key);
             RegisterPinnedAlias(_pinned_aliases, app_key, shortcut_app_id);
             RegisterPinnedAlias(_pinned_aliases, app_key, target_path_key);
@@ -1239,6 +1483,9 @@ void TaskBar::LoadPinnedEntries()
         entry._launch_path = shortcut_path;
         entry._launch_kind = TASKBAR_LAUNCH_SHORTCUT;
         _pinned_app_keys.insert(app_key);
+        RegisterPinnedAlias(_pinned_aliases, app_key, original_shortcut_path_key);
+        RegisterPinnedAlias(_pinned_aliases, app_key, original_shortcut_app_id);
+        RegisterPinnedAlias(_pinned_aliases, app_key, original_target_path_key);
         RegisterPinnedAlias(_pinned_aliases, app_key, shortcut_path_key);
         RegisterPinnedAlias(_pinned_aliases, app_key, shortcut_app_id);
         RegisterPinnedAlias(_pinned_aliases, app_key, target_path_key);
@@ -1276,6 +1523,7 @@ void TaskBar::Refresh()
     }
 
     EnumWindows(EnumWndProc, (LPARAM)this);
+    MergePinnedProcessMatches();
     //EnumDesktopWindows(GetThreadDesktop(GetCurrentThreadId()), EnumWndProc, (LPARAM)_htoolbar);
 
     vector<String> desired_visible_order;

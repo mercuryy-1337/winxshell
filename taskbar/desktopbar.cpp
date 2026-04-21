@@ -1150,7 +1150,11 @@ int DesktopBar::Command(int id, int code)
         break;
 
     case ID_EXPLORE: {
-        explorer_open_frame(SW_SHOWNORMAL, NULL, EXPLORER_OPEN_QUICKLAUNCH);
+        TCHAR peazip_path[MAX_PATH] = { 0 };
+        if (TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path)))
+            launch_file(_hwnd, peazip_path, SW_SHOWNORMAL);
+        else
+            explorer_open_frame(SW_SHOWNORMAL, NULL, EXPLORER_OPEN_QUICKLAUNCH);
         break;
     }
     case ID_TASKMGR:

@@ -676,6 +676,16 @@ int explorer_open_frame(int cmdShow, LPTSTR lpCmdLine, int mode)
     if (lpCmdLine == NULL) lpCmdLine = TEXT("");
     explorer_parameters = lpCmdLine;
 
+    if (!lpCmdLine[0]) {
+        TCHAR peazip_path[MAX_PATH] = { 0 };
+        if (TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path)))
+            return launch_file(g_Globals._hwndDesktop, peazip_path, cmdShow) ? 1 : 0;
+    }
+
+    if (lpCmdLine[0] && PathFileExists(lpCmdLine) &&
+        (PathIsDirectory(lpCmdLine) || PathMatchSpec(lpCmdLine, TEXT("*.zip;*.7z;*.rar;*.tar;*.gz;*.tgz;*.bz2;*.tbz;*.xz;*.txz;*.cab;*.iso"))))
+        return launch_file(g_Globals._hwndDesktop, lpCmdLine, cmdShow) ? 1 : 0;
+
     if (mode == EXPLORER_OPEN_QUICKLAUNCH) {
         explorer_path = JCFG2_DEF("JS_QUICKLAUNCH", "3rd_filename", explorer_path).ToString();
     } else if (mode == EXPLORER_OPEN_HOTKEY) {
@@ -734,6 +744,15 @@ int OpenShellFolders(HWND hwnd, LPIDA pida)
                 try {
                     ShellPath pidl_abs = ShellPath(pidl).create_absolute_pidl(parent_pidl);
                     LOG(FmtString(TEXT("FileExplorer::OpenShellFolders(): pidl_abs=%s"), (LPCTSTR)FileSysShellPath(pidl_abs)));
+
+                    String filesystem_path = (LPCTSTR)FileSysShellPath(pidl_abs);
+                    if (!filesystem_path.empty() && PathFileExists(filesystem_path.c_str()) && PathIsDirectory(filesystem_path.c_str())) {
+                        if (launch_file(g_Globals._hwndDesktop, filesystem_path.c_str(), SW_SHOWNORMAL)) {
+                            if (i > 1) Sleep(mutil_open_interval);
+                            ++cnt;
+                            continue;
+                        }
+                    }
 
                     String explorer_parameters;
                     SHDESCRIPTIONID desc = { 0 };
