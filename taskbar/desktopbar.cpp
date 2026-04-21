@@ -324,6 +324,17 @@ static String GetExecutableDirectory()
     return String(module_path);
 }
 
+static bool ShouldCreateNotifyArea()
+{
+    if (JCFG2_DEF("JS_NOTIFYAREA", "visible", true).ToBool() == FALSE)
+        return false;
+
+    if (JCFG2_DEF("JS_NOTIFYAREA", "respect_shell_restrictions", false).ToBool() == FALSE)
+        return true;
+
+    return !g_Globals._SHRestricted || !g_Globals._SHRestricted(REST_NOTRAYITEMSDISPLAY);
+}
+
 LRESULT DesktopBar::Init(LPCREATESTRUCT pcs)
 {
     if (super::Init(pcs))
@@ -460,7 +471,7 @@ LRESULT DesktopBar::Init(LPCREATESTRUCT pcs)
     // create task bar
     _hwndTaskBar = TaskBar::Create(_hwnd);
 
-    if (!g_Globals._SHRestricted || !SHRestricted(REST_NOTRAYITEMSDISPLAY))
+    if (ShouldCreateNotifyArea())
         // create tray notification area
         _hwndNotify = NotifyArea::Create(_hwnd);
 
