@@ -42,6 +42,7 @@
 
 #include "../resource.h"
 #include "../luaengine/WindowCompositionAttribute.h"
+#include "../utility/taskbar_draw.h"
 
 #include "desktopbar.h"
 #include "startmenu.h"
@@ -2681,7 +2682,7 @@ static String GetModernStartMenuUserName()
     return TEXT("User");
 }
 
-static RECT CalculateModernStartMenuRect()
+static RECT CalculateModernStartMenuRect(HWND hwnd_start_button = NULL)
 {
     int screen_width = GetSystemMetrics(SM_CXSCREEN);
     int screen_height = GetSystemMetrics(SM_CYSCREEN);
@@ -2694,6 +2695,21 @@ static RECT CalculateModernStartMenuRect()
         height = screen_height - JCfg_GetDesktopBarHeightWithDPI() - DPI_SY(10);
 
     int x = (screen_width - width) / 2;
+    if (!taskbar_draw::IsCenteredEnabled()) {
+        x = DPI_SX(8);
+        if (hwnd_start_button && IsWindow(hwnd_start_button)) {
+            RECT button_rect = { 0 };
+            if (GetWindowRect(hwnd_start_button, &button_rect))
+                x = max(DPI_SX(8), button_rect.left + DPI_SX(8));
+        }
+    }
+
+    int max_x = screen_width - width - DPI_SX(8);
+    if (x > max_x)
+        x = max_x;
+    if (x < DPI_SX(8))
+        x = DPI_SX(8);
+
     int y = screen_height - JCfg_GetDesktopBarHeightWithDPI() - height - DPI_SY(8);
     if (y < DPI_SY(8))
         y = DPI_SY(8);
@@ -2830,7 +2846,7 @@ StartMenuRoot::~StartMenuRoot()
 
 HWND StartMenuRoot::Create(HWND hwndOwner, int icon_size)
 {
-    RECT rect = CalculateModernStartMenuRect();
+    RECT rect = CalculateModernStartMenuRect(hwndOwner);
     StartMenuRootCreateInfo create_info;
     create_info._icon_size = icon_size;
 
@@ -3373,7 +3389,7 @@ void StartMenuRoot::ApplyWindowRegion()
 
 void StartMenuRoot::UpdatePlacement()
 {
-    RECT rect = CalculateModernStartMenuRect();
+    RECT rect = CalculateModernStartMenuRect(_hwndStartButton);
     _panel_width = rect.right - rect.left;
     _panel_height = rect.bottom - rect.top;
 
@@ -3735,14 +3751,14 @@ bool StartMenuRoot::AutocompleteSearchSelection()
 
 void StartMenuRoot::AnimateShow()
 {
-    RECT rect = CalculateModernStartMenuRect();
+    RECT rect = CalculateModernStartMenuRect(_hwndStartButton);
     HWND insert_after = _hwndStartButton ? GetParent(_hwndStartButton) : HWND_TOP;
     AnimateStartMenuSlide(_hwnd, insert_after, rect, true);
 }
 
 void StartMenuRoot::AnimateHide()
 {
-    RECT rect = CalculateModernStartMenuRect();
+    RECT rect = CalculateModernStartMenuRect(_hwndStartButton);
     HWND insert_after = _hwndStartButton ? GetParent(_hwndStartButton) : HWND_TOP;
     AnimateStartMenuSlide(_hwnd, insert_after, rect, false);
 }

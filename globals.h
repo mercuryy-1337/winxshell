@@ -80,6 +80,7 @@ extern struct ExplorerGlobals {
     void    getLuaAppEngine();
     void    getUIFolder();
     void    loadConfig();
+    String  getConfigOverridePath() const;
 
     HINSTANCE   _hInstance;
     UINT        _cfStrFName;

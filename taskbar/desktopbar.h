@@ -97,6 +97,8 @@ protected:
     int     Command(int id, int code);
 
     void    Resize(int cx, int cy);
+    void    RefreshLayoutMetrics();
+    void    ApplyTaskbarAlignmentSetting(bool centered, bool persist = true);
     void    ControlResize(WPARAM wparam, LPARAM lparam);
     void    RegisterHotkeys(BOOL unreg = FALSE);
     void    ProcessHotKey(int id_hotkey);

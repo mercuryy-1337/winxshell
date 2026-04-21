@@ -614,6 +614,16 @@ LRESULT TaskBar::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
         // ApplyBackgroundStyle();
         break;
 
+    case PM_REFRESH_CONFIG:
+        InitTaskbarStyle();
+        ResizeButtons();
+        SyncAnimationState(true);
+        RefreshAnimationTimer(false);
+        InvalidateRect(_hwnd, NULL, FALSE);
+        if (_htoolbar)
+            InvalidateRect(_htoolbar, NULL, FALSE);
+        return 0;
+
     case WM_TIMER:
         if (wparam == 0) {
             Refresh();

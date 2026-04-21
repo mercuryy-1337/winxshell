@@ -20,6 +20,8 @@ extern string_t g_JCfg_taskbar_themestyle;
 
 extern Object Load_JsonCfg(string_t filename);
 extern Object Load_JCfg(string_t filename);
+extern bool Load_JCfgOverride(string_t filename);
+extern bool Save_JCfgFile(string_t filename, const Object &obj);
 extern COLORREF JValueToColor(Value val);
 
 extern Value JCfg_GetValue(Object *jcfg, string_t key1, Value defval);

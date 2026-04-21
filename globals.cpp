@@ -157,6 +157,19 @@ DWORD PASCAL ReadKernelVersion(DWORD *wdVers)
     return ReadFileVersion(L"kernel32.dll", wdVers);
 }
 
+static String BuildConfigOverridePath(const String &cfg_path)
+{
+    if (cfg_path.empty())
+        return String();
+
+    size_t dot_pos = cfg_path.rfind(TEXT('.'));
+    size_t slash_pos = cfg_path.rfind(TEXT('\\'));
+    if (dot_pos == String::npos || (slash_pos != String::npos && dot_pos < slash_pos))
+        return cfg_path + TEXT(".user.jcfg");
+
+    return cfg_path.substr(0, dot_pos) + TEXT(".user.jcfg");
+}
+
 void ExplorerGlobals::getSystemInfo()
 {
     DWORD dwVer = ReadKernelVersion(g_Globals._winvers);
@@ -193,7 +206,16 @@ void ExplorerGlobals::loadConfig()
     if (GetFileAttributes(jcfgfile.c_str()) == INVALID_FILE_ATTRIBUTES)
         jcfgfile = TEXT("WinXShell.jcfg");
 #endif
+    _cfg_path = jcfgfile;
+    size_t slash_pos = jcfgfile.rfind(TEXT('\\'));
+    _cfg_dir = slash_pos != String::npos ? jcfgfile.substr(0, slash_pos) : TEXT("");
     Load_JCfg(jcfgfile);
+    Load_JCfgOverride(getConfigOverridePath());
+}
+
+String ExplorerGlobals::getConfigOverridePath() const
+{
+    return BuildConfigOverridePath(_cfg_path);
 }
 
 void ExplorerGlobals::ReadPersistent()

@@ -231,6 +231,47 @@ Load_JCfg(string_t filename)
     return jcfg;
 }
 
+bool
+Load_JCfgOverride(string_t filename)
+{
+    if (filename.empty() || GetFileAttributes(filename.c_str()) == INVALID_FILE_ATTRIBUTES)
+        return false;
+
+    Object override_cfg = Load_JsonCfg(filename);
+    Merge_JCfg(&g_JCfg, &override_cfg, JCFG_MERGEFLAG_OVERWRITE);
+    JCfg_init();
+    return true;
+}
+
+bool
+Save_JCfgFile(string_t filename, const Object &obj)
+{
+    if (filename.empty())
+        return false;
+
+    string_t serialized = Serialize(obj);
+    std::string utf8_serialized;
+#ifdef UNICODE
+    StringCodeChange((LPCCH)serialized.c_str(), CP_UNICODE, utf8_serialized, CP_UTF8);
+#else
+    StringCodeChange((LPCCH)serialized.c_str(), CP_ACP, utf8_serialized, CP_UTF8);
+#endif
+
+    HANDLE hfile = CreateFile(filename.c_str(), GENERIC_WRITE, FILE_SHARE_READ, NULL,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hfile == INVALID_HANDLE_VALUE)
+        return false;
+
+    static const BYTE bom[] = { 0xEF, 0xBB, 0xBF };
+    DWORD written = 0;
+    BOOL ok = WriteFile(hfile, bom, sizeof(bom), &written, NULL);
+    if (ok && !utf8_serialized.empty())
+        ok = WriteFile(hfile, utf8_serialized.data(), (DWORD)utf8_serialized.size(), &written, NULL);
+
+    CloseHandle(hfile);
+    return ok == TRUE;
+}
+
 
 inline void
 string_replace(string_t &s1, const string_t &s2, const string_t &s3)
