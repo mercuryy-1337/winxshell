@@ -84,6 +84,33 @@ struct DesktopBar : public
     static HWND Create();
 
 protected:
+    struct LayoutRects {
+        LayoutRects()
+            : _hasStart(false),
+              _hasQuickLaunch(false),
+              _hasTaskBar(false),
+              _hasNotify(false),
+              _hasRebar(false)
+        {
+            SetRectEmpty(&_start);
+            SetRectEmpty(&_quickLaunch);
+            SetRectEmpty(&_taskBar);
+            SetRectEmpty(&_notify);
+            SetRectEmpty(&_rebar);
+        }
+
+        RECT _start;
+        RECT _quickLaunch;
+        RECT _taskBar;
+        RECT _notify;
+        RECT _rebar;
+        bool _hasStart;
+        bool _hasQuickLaunch;
+        bool _hasTaskBar;
+        bool _hasNotify;
+        bool _hasRebar;
+    };
+
     RECT    _work_area_org;
     RECT    _work_area;
     int     _taskbar_pos;
@@ -91,11 +118,23 @@ protected:
     int     _start_button_width;
     int     _start_button_gap;
     bool    _centered_layout;
+    bool    _alignment_slide_active;
+    double  _alignment_slide_start_ms;
+    double  _alignment_slide_duration_ms;
+    int     _alignment_slide_cx;
+    int     _alignment_slide_cy;
+    LayoutRects _alignment_slide_from;
+    LayoutRects _alignment_slide_to;
     LRESULT Init(LPCREATESTRUCT pcs);
     LRESULT WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam);
     int     Notify(int id, NMHDR *pnmh);
     int     Command(int id, int code);
 
+    void    CaptureChildRects(LayoutRects *layout) const;
+    void    BuildChildRects(int cx, int cy, LayoutRects *layout) const;
+    void    ApplyChildRects(const LayoutRects &layout);
+    void    StopAlignmentSlideAnimation(bool apply_target = true);
+    void    StartAlignmentSlideAnimation(int cx, int cy, const LayoutRects &from_layout);
     void    Resize(int cx, int cy);
     void    RefreshLayoutMetrics();
     void    ApplyTaskbarAlignmentSetting(bool centered, bool persist = true);

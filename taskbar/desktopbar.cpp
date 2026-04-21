@@ -82,6 +82,7 @@ enum TaskbarAlignmentChoice {
 #define PM_TASKBAR_ALIGNMENT_SELECT        (WM_APP + 0x140)
 #define PM_TASKBAR_ALIGNMENT_SET_HOT       (WM_APP + 0x141)
 #define PM_TASKBAR_ALIGNMENT_CLOSE_SUBMENU (WM_APP + 0x142)
+#define ID_TIMER_TASKBAR_ALIGNMENT_SLIDE   0x143
 
 struct TaskbarAlignmentMenuCreateInfo {
     TaskbarAlignmentMenuCreateInfo()
@@ -1003,6 +1004,11 @@ DesktopBar::DesktopBar(HWND hwnd)
     _start_button_width(0),
     _start_button_gap(0),
     _centered_layout(false),
+    _alignment_slide_active(false),
+    _alignment_slide_start_ms(0.0),
+    _alignment_slide_duration_ms(260.0),
+    _alignment_slide_cx(0),
+    _alignment_slide_cy(0),
     _traySndVolIcon(hwnd, ID_TRAY_VOLUME),
     _trayNetworkIcon(hwnd, ID_TRAY_NETWORK)
 {
@@ -1255,6 +1261,268 @@ static String GetExecutableDirectory()
     return String(module_path);
 }
 
+static bool GetChildRectInParent(HWND parent, HWND child, RECT *rect)
+{
+    if (!rect || !parent || !child || !IsWindow(child))
+        return false;
+
+    if (!GetWindowRect(child, rect))
+        return false;
+
+    MapWindowPoints(NULL, parent, (LPPOINT)rect, 2);
+    return true;
+}
+
+static double GetLayoutAnimationClockMilliseconds()
+{
+    static LARGE_INTEGER frequency = { 0 };
+    if (frequency.QuadPart == 0)
+        QueryPerformanceFrequency(&frequency);
+
+    LARGE_INTEGER counter;
+    QueryPerformanceCounter(&counter);
+    return frequency.QuadPart ? ((double)counter.QuadPart * 1000.0 / (double)frequency.QuadPart) : 0.0;
+}
+
+static double EaseInOutCubic(double progress)
+{
+    if (progress <= 0.0)
+        return 0.0;
+    if (progress >= 1.0)
+        return 1.0;
+
+    if (progress < 0.5)
+        return 4.0 * progress * progress * progress;
+
+    double inverse = -2.0 * progress + 2.0;
+    return 1.0 - (inverse * inverse * inverse) / 2.0;
+}
+
+static int LerpInt(int from, int to, double progress)
+{
+    double value = from + (to - from) * progress;
+    return value >= 0.0 ? (int)(value + 0.5) : (int)(value - 0.5);
+}
+
+static RECT LerpRect(const RECT &from, const RECT &to, double progress)
+{
+    RECT rect = {
+        LerpInt(from.left, to.left, progress),
+        LerpInt(from.top, to.top, progress),
+        LerpInt(from.right, to.right, progress),
+        LerpInt(from.bottom, to.bottom, progress)
+    };
+    return rect;
+}
+
+void DesktopBar::CaptureChildRects(LayoutRects *layout) const
+{
+    if (!layout)
+        return;
+
+    *layout = LayoutRects();
+    layout->_hasStart = GetChildRectInParent(_hwnd, _hwndStartButton, &layout->_start);
+    layout->_hasQuickLaunch = GetChildRectInParent(_hwnd, _hwndQuickLaunch, &layout->_quickLaunch);
+    layout->_hasTaskBar = GetChildRectInParent(_hwnd, _hwndTaskBar, &layout->_taskBar);
+    layout->_hasNotify = GetChildRectInParent(_hwnd, _hwndNotify, &layout->_notify);
+    layout->_hasRebar = GetChildRectInParent(_hwnd, _hwndrebar, &layout->_rebar);
+}
+
+void DesktopBar::BuildChildRects(int cx, int cy, LayoutRects *layout) const
+{
+    if (!layout)
+        return;
+
+    *layout = LayoutRects();
+
+    int quicklaunch_width = 0;
+    if (_hwndQuickLaunch)
+        quicklaunch_width = (int)SendMessage(_hwndQuickLaunch, PM_GET_WIDTH, 0, 0);
+
+    int taskbar_width = 0;
+    if (_hwndTaskBar)
+        taskbar_width = (int)SendMessage(_hwndTaskBar, PM_GET_WIDTH, 0, 0);
+
+    int notifyarea_width = 0;
+    if (_hwndNotify)
+        notifyarea_width = (int)SendMessage(_hwndNotify, PM_GET_WIDTH, 0, 0);
+
+    if (_hwndrebar) {
+        if (_hwndStartButton) {
+            layout->_hasStart = true;
+            layout->_start = MakePopupRect(0, 0, _start_button_width, cy);
+        }
+
+        layout->_hasRebar = true;
+        layout->_rebar = MakePopupRect(_taskbar_pos, 1, cx - _taskbar_pos - (notifyarea_width + 1), cy - 2);
+    } else {
+        int quicklaunch_padding = 0;
+        if (!taskbar_draw::IsModernTaskbarEnabled() || !taskbar_draw::IsCenteredEnabled())
+            quicklaunch_padding = (quicklaunch_width > 0 && taskbar_width > 0) ? _iQuickLaunchPadding : 0;
+
+        int start_gap = (_hwndQuickLaunch || taskbar_width > 0) ? _start_button_gap : 0;
+        int group_width = _start_button_width + start_gap + quicklaunch_width + quicklaunch_padding + taskbar_width;
+        int group_left = 0;
+        int right_wall = cx - notifyarea_width;
+        bool can_center = _centered_layout && group_width > 0;
+
+        if (can_center) {
+            group_left = (cx - group_width) / 2;
+            if (group_left + group_width > right_wall)
+                group_left = right_wall - group_width;
+            if (group_left < 0)
+                group_left = 0;
+        }
+
+        if (can_center) {
+            int next_x = group_left;
+
+            if (_hwndStartButton) {
+                layout->_hasStart = true;
+                layout->_start = MakePopupRect(next_x, 0, _start_button_width, cy);
+            }
+            next_x += _start_button_width + start_gap;
+
+            if (_hwndQuickLaunch) {
+                layout->_hasQuickLaunch = true;
+                layout->_quickLaunch = MakePopupRect(next_x, 0, quicklaunch_width, cy);
+                next_x += quicklaunch_width + quicklaunch_padding;
+            }
+
+            if (_hwndTaskBar) {
+                layout->_hasTaskBar = true;
+                layout->_taskBar = MakePopupRect(next_x, 0, taskbar_width, cy);
+            }
+        } else {
+            if (_hwndStartButton) {
+                layout->_hasStart = true;
+                layout->_start = MakePopupRect(0, 0, _start_button_width, cy);
+            }
+
+            if (quicklaunch_width > 0)
+                quicklaunch_width += _iQuickLaunchPadding;
+            if (_hwndQuickLaunch) {
+                layout->_hasQuickLaunch = true;
+                layout->_quickLaunch = MakePopupRect(_taskbar_pos, 1, quicklaunch_width, cy - 2);
+            }
+
+            bool modern_taskbar = taskbar_draw::IsModernTaskbarEnabled();
+            int tb_y = modern_taskbar ? 0 : 1;
+            int tb_h = modern_taskbar ? cy : cy - 2;
+            if (_hwndTaskBar) {
+                layout->_hasTaskBar = true;
+                layout->_taskBar = MakePopupRect(_taskbar_pos + quicklaunch_width, tb_y,
+                    cx - _taskbar_pos - quicklaunch_width - (notifyarea_width + 1), tb_h);
+            }
+        }
+    }
+
+    if (_hwndNotify) {
+        layout->_hasNotify = true;
+        layout->_notify = MakePopupRect(cx - notifyarea_width, 0, notifyarea_width, cy);
+    }
+}
+
+void DesktopBar::ApplyChildRects(const LayoutRects &layout)
+{
+    HDWP hdwp = BeginDeferWindowPos(5);
+    if (!hdwp)
+        return;
+
+    if (_hwndStartButton && layout._hasStart) {
+        hdwp = DeferWindowPos(hdwp, _hwndStartButton, 0,
+            layout._start.left,
+            layout._start.top,
+            layout._start.right - layout._start.left,
+            layout._start.bottom - layout._start.top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    if (_hwndQuickLaunch && layout._hasQuickLaunch) {
+        hdwp = DeferWindowPos(hdwp, _hwndQuickLaunch, 0,
+            layout._quickLaunch.left,
+            layout._quickLaunch.top,
+            layout._quickLaunch.right - layout._quickLaunch.left,
+            layout._quickLaunch.bottom - layout._quickLaunch.top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    if (_hwndTaskBar && layout._hasTaskBar) {
+        hdwp = DeferWindowPos(hdwp, _hwndTaskBar, 0,
+            layout._taskBar.left,
+            layout._taskBar.top,
+            layout._taskBar.right - layout._taskBar.left,
+            layout._taskBar.bottom - layout._taskBar.top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    if (_hwndrebar && layout._hasRebar) {
+        hdwp = DeferWindowPos(hdwp, _hwndrebar, 0,
+            layout._rebar.left,
+            layout._rebar.top,
+            layout._rebar.right - layout._rebar.left,
+            layout._rebar.bottom - layout._rebar.top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    if (_hwndNotify && layout._hasNotify) {
+        hdwp = DeferWindowPos(hdwp, _hwndNotify, 0,
+            layout._notify.left,
+            layout._notify.top,
+            layout._notify.right - layout._notify.left,
+            layout._notify.bottom - layout._notify.top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    if (hdwp)
+        EndDeferWindowPos(hdwp);
+}
+
+void DesktopBar::StopAlignmentSlideAnimation(bool apply_target)
+{
+    bool was_active = _alignment_slide_active;
+    _alignment_slide_active = false;
+    KillTimer(_hwnd, ID_TIMER_TASKBAR_ALIGNMENT_SLIDE);
+
+    if (apply_target && was_active)
+        ApplyChildRects(_alignment_slide_to);
+}
+
+void DesktopBar::StartAlignmentSlideAnimation(int cx, int cy, const LayoutRects &from_layout)
+{
+    StopAlignmentSlideAnimation(false);
+
+    _alignment_slide_from = from_layout;
+    _alignment_slide_cx = cx;
+    _alignment_slide_cy = cy;
+    BuildChildRects(cx, cy, &_alignment_slide_to);
+
+    bool changed = false;
+    if (_alignment_slide_from._hasStart == _alignment_slide_to._hasStart)
+        changed = changed || !EqualRect(&_alignment_slide_from._start, &_alignment_slide_to._start);
+    else
+        changed = changed || _alignment_slide_from._hasStart || _alignment_slide_to._hasStart;
+
+    if (_alignment_slide_from._hasQuickLaunch == _alignment_slide_to._hasQuickLaunch)
+        changed = changed || !EqualRect(&_alignment_slide_from._quickLaunch, &_alignment_slide_to._quickLaunch);
+    else
+        changed = changed || _alignment_slide_from._hasQuickLaunch || _alignment_slide_to._hasQuickLaunch;
+
+    if (_alignment_slide_from._hasTaskBar == _alignment_slide_to._hasTaskBar)
+        changed = changed || !EqualRect(&_alignment_slide_from._taskBar, &_alignment_slide_to._taskBar);
+    else
+        changed = changed || _alignment_slide_from._hasTaskBar || _alignment_slide_to._hasTaskBar;
+
+    if (!changed) {
+        ApplyChildRects(_alignment_slide_to);
+        return;
+    }
+
+    _alignment_slide_active = true;
+    _alignment_slide_start_ms = GetLayoutAnimationClockMilliseconds();
+    SetTimer(_hwnd, ID_TIMER_TASKBAR_ALIGNMENT_SLIDE, 10, NULL);
+}
+
 void DesktopBar::RefreshLayoutMetrics()
 {
     _centered_layout = taskbar_draw::IsCenteredEnabled() && JCFG_TB(2, "userebar").ToBool() == FALSE;
@@ -1283,6 +1551,11 @@ void DesktopBar::RefreshLayoutMetrics()
 
 void DesktopBar::ApplyTaskbarAlignmentSetting(bool centered, bool persist)
 {
+    LayoutRects from_layout;
+    bool alignment_changed = _centered_layout != centered;
+    if (alignment_changed)
+        CaptureChildRects(&from_layout);
+
     JCFG_TB_SET(2, "centered") = Value(centered);
     if (persist)
         PersistTaskbarCentered(centered);
@@ -1295,6 +1568,8 @@ void DesktopBar::ApplyTaskbarAlignmentSetting(bool centered, bool persist)
         SendMessage(_hwndNotify, PM_REFRESH_CONFIG, 0, 0);
 
     ClientRect size(_hwnd);
+    if (alignment_changed && taskbar_draw::IsModernTaskbarEnabled() && !_hwndrebar)
+        StartAlignmentSlideAnimation(size.right, size.bottom, from_layout);
     Resize(size.right, size.bottom);
     InvalidateRect(_hwnd, NULL, FALSE);
 }
@@ -1853,6 +2128,9 @@ LRESULT DesktopBar::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
             if (JCFG2_DEF("JS_TASKBAR", "hideforfullscreenwindow", true).ToBool() != FALSE) {
                 HideForFullScreenWindow(_hwnd);
             }
+        } else if (wparam == ID_TIMER_TASKBAR_ALIGNMENT_SLIDE) {
+            ClientRect size(_hwnd);
+            Resize(size.right, size.bottom);
         } else if (wparam == ID_TRAY_VOLUME) {
             OnTraySndVol(_hwnd, (UINT)wparam);
         } else if (wparam == ID_TRAY_NETWORK) {
@@ -1965,83 +2243,37 @@ static int CommandHook(HWND hwnd, const TCHAR *act)
 
 void DesktopBar::Resize(int cx, int cy)
 {
-    ///@todo general children resizing algorithm
-    int quicklaunch_width = 0;
-    if (_hwndQuickLaunch) {
-        quicklaunch_width = (int)SendMessage(_hwndQuickLaunch, PM_GET_WIDTH, 0, 0);
-    }
-    int taskbar_width = 0;
-    if (_hwndTaskBar) {
-        taskbar_width = (int)SendMessage(_hwndTaskBar, PM_GET_WIDTH, 0, 0);
-    }
-    int notifyarea_width = 0;
-    if (_hwndNotify) {
-        notifyarea_width = (int)SendMessage(_hwndNotify, PM_GET_WIDTH, 0, 0);
-    }
-    //_log_(FmtString("Resize - %d,%d\r\n", cx, cy));
-    HDWP hdwp = BeginDeferWindowPos(4);
+    LayoutRects layout;
+    BuildChildRects(cx, cy, &layout);
 
-    if (_hwndrebar) {
-        if (_hwndStartButton) {
-            DeferWindowPos(hdwp, _hwndStartButton, 0, 0, 0, _start_button_width, cy, SWP_NOZORDER | SWP_NOACTIVATE);
-        }
-        DeferWindowPos(hdwp, _hwndrebar, 0, _taskbar_pos, 1, cx - _taskbar_pos - (notifyarea_width + 1), cy - 2, SWP_NOZORDER | SWP_NOACTIVATE);
-    } else {
-        int quicklaunch_padding = 0;
-        if (!taskbar_draw::IsModernTaskbarEnabled() || !taskbar_draw::IsCenteredEnabled())
-            quicklaunch_padding = (quicklaunch_width > 0 && taskbar_width > 0) ? _iQuickLaunchPadding : 0;
-        int start_gap = (_hwndQuickLaunch || taskbar_width > 0) ? _start_button_gap : 0;
-        int group_width = _start_button_width + start_gap + quicklaunch_width + quicklaunch_padding + taskbar_width;
-        int group_left = 0;
-        int right_wall = cx - notifyarea_width;
-        bool can_center = _centered_layout && group_width > 0;
+    if (_alignment_slide_active && !_hwndrebar) {
+        _alignment_slide_cx = cx;
+        _alignment_slide_cy = cy;
+        _alignment_slide_to = layout;
 
-        if (can_center) {
-            group_left = (cx - group_width) / 2;
-            if (group_left + group_width > right_wall)
-                group_left = right_wall - group_width;
-            if (group_left < 0)
-                group_left = 0;
-        }
-
-        if (can_center) {
-            int next_x = group_left;
-
-            if (_hwndStartButton) {
-                DeferWindowPos(hdwp, _hwndStartButton, 0, next_x, 0, _start_button_width, cy, SWP_NOZORDER | SWP_NOACTIVATE);
-            }
-            next_x += _start_button_width + start_gap;
-
-            if (_hwndQuickLaunch) {
-                DeferWindowPos(hdwp, _hwndQuickLaunch, 0, next_x, 0, quicklaunch_width, cy, SWP_NOZORDER | SWP_NOACTIVATE);
-                next_x += quicklaunch_width + quicklaunch_padding;
-            }
-
-            if (_hwndTaskBar) {
-                DeferWindowPos(hdwp, _hwndTaskBar, 0, next_x, 0, taskbar_width, cy, SWP_NOZORDER | SWP_NOACTIVATE);
-            }
+        double elapsed = GetLayoutAnimationClockMilliseconds() - _alignment_slide_start_ms;
+        double duration = _alignment_slide_duration_ms > 0.0 ? _alignment_slide_duration_ms : 1.0;
+        double progress = (double)elapsed / duration;
+        if (progress >= 1.0) {
+            _alignment_slide_active = false;
+            KillTimer(_hwnd, ID_TIMER_TASKBAR_ALIGNMENT_SLIDE);
+            ApplyChildRects(_alignment_slide_to);
         } else {
-            if (_hwndStartButton) {
-                DeferWindowPos(hdwp, _hwndStartButton, 0, 0, 0, _start_button_width, cy, SWP_NOZORDER | SWP_NOACTIVATE);
-            }
+            LayoutRects animated = _alignment_slide_to;
+            double eased = EaseInOutCubic(progress);
 
-            if (quicklaunch_width > 0)
-                quicklaunch_width += _iQuickLaunchPadding;
-            if (_hwndQuickLaunch)
-                DeferWindowPos(hdwp, _hwndQuickLaunch, 0, _taskbar_pos, 1, quicklaunch_width, cy - 2, SWP_NOZORDER | SWP_NOACTIVATE);
+            if (_alignment_slide_from._hasStart && _alignment_slide_to._hasStart)
+                animated._start = LerpRect(_alignment_slide_from._start, _alignment_slide_to._start, eased);
+            if (_alignment_slide_from._hasQuickLaunch && _alignment_slide_to._hasQuickLaunch)
+                animated._quickLaunch = LerpRect(_alignment_slide_from._quickLaunch, _alignment_slide_to._quickLaunch, eased);
+            if (_alignment_slide_from._hasTaskBar && _alignment_slide_to._hasTaskBar)
+                animated._taskBar = LerpRect(_alignment_slide_from._taskBar, _alignment_slide_to._taskBar, eased);
 
-            bool modern_taskbar = taskbar_draw::IsModernTaskbarEnabled();
-            int tb_y = modern_taskbar ? 0 : 1;
-            int tb_h = modern_taskbar ? cy : cy - 2;
-            if (_hwndTaskBar)
-                DeferWindowPos(hdwp, _hwndTaskBar, 0, _taskbar_pos + quicklaunch_width, tb_y, cx - _taskbar_pos - quicklaunch_width - (notifyarea_width + 1), tb_h, SWP_NOZORDER | SWP_NOACTIVATE);
+            ApplyChildRects(animated);
         }
+    } else {
+        ApplyChildRects(layout);
     }
-
-    if (_hwndNotify)
-        DeferWindowPos(hdwp, _hwndNotify, 0, cx - notifyarea_width, 0, notifyarea_width, cy, SWP_NOZORDER | SWP_NOACTIVATE);
-
-    EndDeferWindowPos(hdwp);
 
     WindowRect rect(_hwnd);
     RECT work_area = {0, 0, GetSystemMetrics(SM_CXSCREEN), rect.top};
