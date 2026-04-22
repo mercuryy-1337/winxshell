@@ -101,6 +101,50 @@ static bool HasVisibleOrderKey(const vector<String> &order, const String &key)
     return false;
 }
 
+static bool TryGetRemovalOnlyIndices(const vector<String> &previous_order, const vector<String> &desired_visible_order,
+    vector<int> *removed_indices)
+{
+    if (!removed_indices)
+        return false;
+
+    removed_indices->clear();
+    if (desired_visible_order.size() >= previous_order.size())
+        return false;
+
+    size_t desired_index = 0;
+    for (size_t previous_index = 0; previous_index < previous_order.size(); ++previous_index) {
+        if (desired_index < desired_visible_order.size() && previous_order[previous_index] == desired_visible_order[desired_index]) {
+            ++desired_index;
+        } else {
+            removed_indices->push_back((int)previous_index);
+        }
+    }
+
+    return desired_index == desired_visible_order.size() && !removed_indices->empty();
+}
+
+    static bool TryGetAdditionOnlyIndices(const vector<String> &previous_order, const vector<String> &desired_visible_order,
+        vector<int> *added_indices)
+    {
+        if (!added_indices)
+            return false;
+
+        added_indices->clear();
+        if (desired_visible_order.size() <= previous_order.size())
+            return false;
+
+        size_t previous_index = 0;
+        for (size_t desired_index = 0; desired_index < desired_visible_order.size(); ++desired_index) {
+            if (previous_index < previous_order.size() && desired_visible_order[desired_index] == previous_order[previous_index]) {
+                ++previous_index;
+            } else {
+                added_indices->push_back((int)desired_index);
+            }
+        }
+
+        return previous_index == previous_order.size() && !added_indices->empty();
+    }
+
 static String ResolvePinnedAlias(const map<String, String> &aliases, const String &key)
 {
     if (key.empty())
@@ -394,6 +438,19 @@ static void DrawTaskbarButtonIndicators(HDC hdc, const RECT &item_rect, int wnd_
     }
 }
 
+static void DrawTaskbarButtonIndicators(HDC hdc, const RECT &item_rect, int wnd_count, float active_progress, float visibility_progress)
+{
+    if (visibility_progress <= 0.0f)
+        return;
+
+    if (visibility_progress >= 0.99f) {
+        DrawTaskbarButtonIndicators(hdc, item_rect, wnd_count, active_progress);
+        return;
+    }
+
+    DrawTaskbarButtonIndicators(hdc, item_rect, wnd_count, active_progress * visibility_progress);
+}
+
 struct TaskbarResolvedIcon {
     TaskbarResolvedIcon()
         : _icon(NULL),
@@ -553,12 +610,26 @@ static RECT GetDirectTaskbarIconRect(const RECT &item_rect)
     return rect;
 }
 
+static RECT GetAnimatedDirectTaskbarIconRect(const RECT &item_rect, const TaskBarEntry &entry)
+{
+    RECT rect = GetDirectTaskbarIconRect(item_rect);
+
+    if (entry._icon_animating_in && entry._icon_visibility < 1.0f) {
+        int offset = max(DPI_SY(10), (rect.bottom - rect.top) / 2);
+        int shift = (int)((1.0f - entry._icon_visibility) * offset + 0.5f);
+        OffsetRect(&rect, 0, shift);
+    }
+
+    return rect;
+}
+
 static void DrawDirectTaskbarEntryIcon(HDC hdc, const RECT &item_rect, const TaskBarEntry &entry)
 {
     TaskbarResolvedIcon resolved = ResolveTaskbarEntryIcon(entry);
     if (resolved._icon) {
-        RECT icon_rect = GetDirectTaskbarIconRect(item_rect);
-        draw_icon_high_quality(hdc, resolved._icon, icon_rect);
+        RECT icon_rect = GetAnimatedDirectTaskbarIconRect(item_rect, entry);
+        BYTE alpha = taskbar_draw::ClampAlpha((int)(entry._icon_visibility * 255.0f + 0.5f));
+        draw_icon_high_quality(hdc, resolved._icon, icon_rect, alpha);
     }
     ReleaseTaskbarResolvedIcon(&resolved);
 }
@@ -573,11 +644,15 @@ TaskBarEntry::TaskBarEntry()
     _fsState = 0;
     _hover_progress = 0.0f;
     _active_progress = 0.0f;
+    _icon_visibility = 1.0f;
     _pid = 0;
     _window_group_count = 0;
     _primary_hwnd = 0;
     _launch_kind = TASKBAR_LAUNCH_NONE;
     _pinned = false;
+    _icon_animating_in = false;
+    _icon_animating_out = false;
+    _pending_remove = false;
 }
 
 TaskBarMap::~TaskBarMap()
@@ -744,15 +819,18 @@ LRESULT TaskBar::Init(LPCREATESTRUCT pcs)
         SendMessage(_htoolbar, TB_SETIMAGELIST, 0, (LPARAM)_himl);
     }
 
+    DWORD toolbar_exstyle = 0;
     if (_no_task_title) {
         // show only icons — full-slot bitmaps, no text display
-        SendMessage(_htoolbar, TB_SETEXTENDEDSTYLE, 0, TBSTYLE_EX_MIXEDBUTTONS);
+        toolbar_exstyle = TBSTYLE_EX_MIXEDBUTTONS;
         SendMessage(_htoolbar, TB_SETPADDING, 0, MAKELPARAM(0, 0));
-    } else {
-        if (_task_close_button) {
-            SendMessage(_htoolbar, TB_SETEXTENDEDSTYLE, 0, TBSTYLE_EX_DRAWDDARROWS);
-        }
+    } else if (_task_close_button) {
+        toolbar_exstyle = TBSTYLE_EX_DRAWDDARROWS;
     }
+
+    if (toolbar_exstyle)
+        SendMessage(_htoolbar, TB_SETEXTENDEDSTYLE, 0, toolbar_exstyle);
+
     SendMessage(_htoolbar, TB_SETBITMAPSIZE, 0, MAKELPARAM(_icon_area.right, _icon_area.bottom));
 
     String msstyle_taskbutton = JCFG2_DEF("JS_TASKBAR", "msstyle_taskbutton", TEXT("")).ToString();
@@ -840,8 +918,10 @@ LRESULT TaskBar::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
             if (!AdvanceAnimations()) {
                 KillTimer(_hwnd, ID_TIMER_ANIMATEBUTTONS);
                 _animation_timer_running = false;
+                RedrawWindow(_htoolbar, NULL, NULL, RDW_INVALIDATE | RDW_NOERASE);
+            } else {
+                InvalidateAnimatedButtons();
             }
-            InvalidateRect(_htoolbar, NULL, FALSE);
         } else if (wparam == ID_TIMER_DESTORYTHUMBNAIL) {
             KillTimer(_hwnd, ID_TIMER_DESTORYTHUMBNAIL);
             if (!IsThumbnailCursorInRegion())
@@ -1033,23 +1113,32 @@ int TaskBar::Notify(int id, NMHDR *pnmh)
 
                     float hover_progress = 0.0f;
                     float active_progress = 0.0f;
+                    float icon_visibility = 1.0f;
                     if (found != _map.end()) {
                         hover_progress = found->second._hover_progress;
                         active_progress = found->second._active_progress;
+                        icon_visibility = found->second._icon_visibility;
                     }
                     if (!_animate_highlights) {
                         hover_progress = ((lptbcd->nmcd.uItemState & CDIS_HOT) == CDIS_HOT) ? 1.0f : 0.0f;
                         active_progress = ((lptbcd->nmcd.uItemState & CDIS_CHECKED) == CDIS_CHECKED) ? 1.0f : 0.0f;
                     }
 
+                    if (UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title)) {
+                        hover_progress *= icon_visibility;
+                        active_progress *= icon_visibility;
+                    }
+
                     DrawTaskbarButtonHighlight(lptbcd->nmcd.hdc, lptbcd->nmcd.rc, hover_progress, active_progress);
-                        if (UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title)) {
-                            if (found != _map.end()) {
-                                DrawDirectTaskbarEntryIcon(lptbcd->nmcd.hdc, lptbcd->nmcd.rc, found->second);
-                                DrawTaskbarButtonIndicators(lptbcd->nmcd.hdc, lptbcd->nmcd.rc, found->second._window_group_count, active_progress);
-                            }
-                            return CDRF_SKIPDEFAULT;
+
+                    if (UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title)) {
+                        if (found != _map.end()) {
+                            DrawDirectTaskbarEntryIcon(lptbcd->nmcd.hdc, lptbcd->nmcd.rc, found->second);
+                            DrawTaskbarButtonIndicators(lptbcd->nmcd.hdc, lptbcd->nmcd.rc,
+                                found->second._window_group_count, active_progress, icon_visibility);
                         }
+                        return CDRF_SKIPDEFAULT;
+                    }
 
                     return TBCDRF_NOBACKGROUND | TBCDRF_NOEDGES | TBCDRF_NOOFFSET |
                         TBCDRF_NOETCHEDEFFECT | CDRF_NOTIFYPOSTPAINT | CDRF_USECDCOLORS;
@@ -1650,6 +1739,10 @@ void TaskBar::Refresh()
 
     vector<String> desired_visible_order;
     bool rebuild_buttons = false;
+    bool direct_icon_draw = UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title);
+    bool incremental_button_updates = _centered_layout && direct_icon_draw;
+    bool animate_taskbar_icons = incremental_button_updates && _animate_highlights;
+    bool defer_reflow_repaint = false;
 
     for (size_t index = 0; index < _visible_order.size(); ++index) {
         TaskBarMap::iterator found = _map.find(_visible_order[index]);
@@ -1657,8 +1750,38 @@ void TaskBar::Refresh()
             continue;
 
         TaskBarEntry &entry = found->second;
-        if (!entry._pinned && !entry._used)
-            continue;
+        bool currently_visible = entry._pinned || entry._used;
+        if (!currently_visible) {
+            if (animate_taskbar_icons && entry._id && !entry._pending_remove) {
+                if (!entry._icon_animating_out) {
+                    entry._icon_animating_in = false;
+                    entry._icon_animating_out = true;
+                    entry._icon_visibility = 1.0f;
+                }
+            } else {
+                continue;
+            }
+        } else {
+            if (entry._pending_remove)
+                entry._pending_remove = false;
+
+            if (entry._icon_animating_out) {
+                entry._icon_animating_out = false;
+                entry._icon_visibility = 1.0f;
+            }
+
+            if (!entry._id) {
+                if (animate_taskbar_icons && !previous_order.empty() && !HasVisibleOrderKey(previous_order, _visible_order[index])) {
+                    entry._icon_visibility = 0.0f;
+                    entry._icon_animating_in = true;
+                } else {
+                    entry._icon_visibility = 1.0f;
+                    entry._icon_animating_in = false;
+                }
+            } else if (!entry._icon_animating_in) {
+                entry._icon_visibility = 1.0f;
+            }
+        }
 
         if (entry._title.empty() && !entry._pin_title.empty())
             entry._title = entry._pin_title;
@@ -1681,99 +1804,224 @@ void TaskBar::Refresh()
         }
     }
 
-    if (rebuild_buttons) {
-        DestoryThumbnailWindow();
-        SendMessage(_htoolbar, WM_SETREDRAW, FALSE, 0);
-        bool direct_icon_draw = UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title);
-
-        // Build set of keys that will remain visible
-        set<String> visible_keys;
-        for (size_t i = 0; i < desired_visible_order.size(); ++i)
-            visible_keys.insert(desired_visible_order[i]);
-
-        for (TaskBarMap::iterator it = _map.begin(); it != _map.end(); ++it) {
-            // Only delete bitmaps for entries that won't be visible (prevents blank icons)
-            if (visible_keys.find(it->first) == visible_keys.end()) {
-                if (it->second._hbmp)
-                    DeleteObject(it->second._hbmp);
-                it->second._hbmp = 0;
+    vector<int> added_button_indices;
+    vector<int> removed_button_indices;
+    bool add_only_rebuild = rebuild_buttons && incremental_button_updates &&
+        TryGetAdditionOnlyIndices(previous_order, desired_visible_order, &added_button_indices);
+    if (add_only_rebuild) {
+        size_t add_index = 0;
+        for (size_t index = 0; index < desired_visible_order.size(); ++index) {
+            bool is_added = add_index < added_button_indices.size() && added_button_indices[add_index] == (int)index;
+            TaskBarMap::iterator found = _map.find(desired_visible_order[index]);
+            if (found == _map.end()) {
+                add_only_rebuild = false;
+                break;
             }
-            it->second._bmp_idx = 0;
-            it->second._btn_idx = 0;
-            it->second._id = 0;
+
+            if (is_added) {
+                if (found->second._id)
+                    add_only_rebuild = false;
+                ++add_index;
+            } else if (!found->second._id) {
+                add_only_rebuild = false;
+                break;
+            }
         }
+    }
 
-        int button_count = (int)SendMessage(_htoolbar, TB_BUTTONCOUNT, 0, 0);
-        while (button_count-- > 0)
-            SendMessage(_htoolbar, TB_DELETEBUTTON, 0, 0);
-
-        if (_himl)
-            ImageList_RemoveAll(_himl);
-
-        _next_id = IDC_FIRST_APP;
-
+    bool remove_only_rebuild = rebuild_buttons && incremental_button_updates &&
+        TryGetRemovalOnlyIndices(previous_order, desired_visible_order, &removed_button_indices);
+    if (remove_only_rebuild) {
         for (size_t index = 0; index < desired_visible_order.size(); ++index) {
             TaskBarMap::iterator found = _map.find(desired_visible_order[index]);
-            if (found == _map.end())
-                continue;
+            if (found == _map.end() || !found->second._id) {
+                remove_only_rebuild = false;
+                break;
+            }
+        }
+    }
 
-            TaskBarEntry &entry = found->second;
-            HBITMAP hbmp = 0;
-            if (!direct_icon_draw) {
-                hbmp = entry._hbmp ? entry._hbmp : CreateEntryBitmap(entry);
-                if (_himl)
-                    entry._bmp_idx = ImageList_Add(_himl, hbmp, 0);
-                if (!_himl || entry._bmp_idx == -1) {
-                    TBADDBITMAP ab = {0, (UINT_PTR)hbmp};
-                    entry._bmp_idx = (int)SendMessage(_htoolbar, TB_ADDBITMAP, 1, (LPARAM)&ab);
-                }
-            } else {
-                if (entry._hbmp)
-                    DeleteObject(entry._hbmp);
+    if (rebuild_buttons) {
+        DestoryThumbnailWindow();
+        RECT partial_redraw_rect = { 0 };
+        bool use_partial_redraw = false;
+        int first_changed_index = -1;
+        if (add_only_rebuild && !added_button_indices.empty())
+            first_changed_index = added_button_indices[0];
+        else if (remove_only_rebuild && !removed_button_indices.empty())
+            first_changed_index = removed_button_indices[0];
+
+        defer_reflow_repaint = incremental_button_updates && (add_only_rebuild || remove_only_rebuild);
+
+        if (first_changed_index >= 0) {
+            ClientRect toolbar_client(_htoolbar);
+            partial_redraw_rect.left = 0;
+            partial_redraw_rect.top = 0;
+            partial_redraw_rect.right = toolbar_client.right;
+            partial_redraw_rect.bottom = toolbar_client.bottom;
+        }
+
+        SendMessage(_htoolbar, WM_SETREDRAW, FALSE, 0);
+        if (add_only_rebuild) {
+            for (size_t index = 0; index < desired_visible_order.size(); ++index) {
+                TaskBarMap::iterator found = _map.find(desired_visible_order[index]);
+                if (found == _map.end())
+                    continue;
+
+                TaskBarEntry &entry = found->second;
+                entry._btn_idx = (int)index;
+                if (entry._id)
+                    continue;
+
                 entry._bmp_idx = -2;
+                entry._id = _next_id++;
+
+                BYTE button_state = entry._used ? entry._fsState : (BYTE)TBSTATE_ENABLED;
+                TBBUTTON btn = { -2, entry._id, button_state, BTNS_BUTTON, {0, 0}, 0, 0 };
+                if (_task_close_button && entry._used)
+                    btn.fsStyle = BTNS_DROPDOWN;
+                if (entry._title.length() && !_no_task_title)
+                    btn.iString = (INT_PTR)entry._title.c_str();
+
+                btn.iBitmap = -2;
+                SendMessage(_htoolbar, TB_INSERTBUTTON, entry._btn_idx, (LPARAM)&btn);
+            }
+        } else if (remove_only_rebuild) {
+            for (int removed_index = (int)removed_button_indices.size() - 1; removed_index >= 0; --removed_index) {
+                int toolbar_index = removed_button_indices[removed_index];
+                if (toolbar_index < 0)
+                    continue;
+
+                if ((size_t)toolbar_index < previous_order.size()) {
+                    TaskBarMap::iterator removed_found = _map.find(previous_order[toolbar_index]);
+                    if (removed_found != _map.end()) {
+                        removed_found->second._id = 0;
+                        removed_found->second._btn_idx = 0;
+                        removed_found->second._bmp_idx = 0;
+                    }
+                }
+
+                SendMessage(_htoolbar, TB_DELETEBUTTON, toolbar_index, 0);
             }
 
-            entry._hbmp = hbmp;
-            entry._id = _next_id++;
+            for (size_t index = 0; index < desired_visible_order.size(); ++index) {
+                TaskBarMap::iterator found = _map.find(desired_visible_order[index]);
+                if (found == _map.end())
+                    continue;
 
-            BYTE button_state = entry._used ? entry._fsState : (BYTE)TBSTATE_ENABLED;
-            TBBUTTON btn = { -2, entry._id, button_state, BTNS_BUTTON, {0, 0}, 0, 0 };
-            if (_task_close_button && entry._used)
-                btn.fsStyle = BTNS_DROPDOWN;
-            if (entry._title.length() && !_no_task_title)
-                btn.iString = (INT_PTR)entry._title.c_str();
+                found->second._btn_idx = (int)index;
+            }
+        } else {
+            // Build set of keys that will remain visible
+            set<String> visible_keys;
+            for (size_t i = 0; i < desired_visible_order.size(); ++i)
+                visible_keys.insert(desired_visible_order[i]);
 
-            btn.iBitmap = direct_icon_draw ? -2 : entry._bmp_idx;
-            entry._btn_idx = (int)index;
-            SendMessage(_htoolbar, TB_INSERTBUTTON, entry._btn_idx, (LPARAM)&btn);
+            for (TaskBarMap::iterator it = _map.begin(); it != _map.end(); ++it) {
+                // Only delete bitmaps for entries that won't be visible (prevents blank icons)
+                if (visible_keys.find(it->first) == visible_keys.end()) {
+                    if (it->second._hbmp)
+                        DeleteObject(it->second._hbmp);
+                    it->second._hbmp = 0;
+                }
+                it->second._bmp_idx = 0;
+                it->second._btn_idx = 0;
+                it->second._id = 0;
+            }
+
+            int button_count = (int)SendMessage(_htoolbar, TB_BUTTONCOUNT, 0, 0);
+            while (button_count-- > 0)
+                SendMessage(_htoolbar, TB_DELETEBUTTON, 0, 0);
+
+            if (_himl)
+                ImageList_RemoveAll(_himl);
+
+            _next_id = IDC_FIRST_APP;
+
+            for (size_t index = 0; index < desired_visible_order.size(); ++index) {
+                TaskBarMap::iterator found = _map.find(desired_visible_order[index]);
+                if (found == _map.end())
+                    continue;
+
+                TaskBarEntry &entry = found->second;
+                HBITMAP hbmp = 0;
+                if (!direct_icon_draw) {
+                    hbmp = entry._hbmp ? entry._hbmp : CreateEntryBitmap(entry);
+                    if (_himl)
+                        entry._bmp_idx = ImageList_Add(_himl, hbmp, 0);
+                    if (!_himl || entry._bmp_idx == -1) {
+                        TBADDBITMAP ab = {0, (UINT_PTR)hbmp};
+                        entry._bmp_idx = (int)SendMessage(_htoolbar, TB_ADDBITMAP, 1, (LPARAM)&ab);
+                    }
+                } else {
+                    if (entry._hbmp)
+                        DeleteObject(entry._hbmp);
+                    entry._bmp_idx = -2;
+                }
+
+                entry._hbmp = hbmp;
+                entry._id = _next_id++;
+
+                BYTE button_state = entry._used ? entry._fsState : (BYTE)TBSTATE_ENABLED;
+                TBBUTTON btn = { -2, entry._id, button_state, BTNS_BUTTON, {0, 0}, 0, 0 };
+                if (_task_close_button && entry._used)
+                    btn.fsStyle = BTNS_DROPDOWN;
+                if (entry._title.length() && !_no_task_title)
+                    btn.iString = (INT_PTR)entry._title.c_str();
+
+                btn.iBitmap = direct_icon_draw ? -2 : entry._bmp_idx;
+                entry._btn_idx = (int)index;
+                SendMessage(_htoolbar, TB_INSERTBUTTON, entry._btn_idx, (LPARAM)&btn);
+            }
         }
 
         SendMessage(_htoolbar, WM_SETREDRAW, TRUE, 0);
-        InvalidateRect(_htoolbar, NULL, FALSE);
-    } else {
-        for (size_t index = 0; index < desired_visible_order.size(); ++index) {
-            TaskBarMap::iterator found = _map.find(desired_visible_order[index]);
-            if (found == _map.end() || !found->second._id)
-                continue;
+        if (first_changed_index >= 0) {
+            int query_index = first_changed_index;
+            int button_count = (int)SendMessage(_htoolbar, TB_BUTTONCOUNT, 0, 0);
+            if (button_count > 0) {
+                if (query_index >= button_count)
+                    query_index = button_count - 1;
 
-            TaskBarEntry &entry = found->second;
-            BYTE state = entry._used ? entry._fsState : TBSTATE_ENABLED;
-            SendMessage(_htoolbar, TB_SETSTATE, entry._id, MAKELONG(state, 0));
-
-            if (!_no_task_title) {
-                TBBUTTONINFO info;
-                info.cbSize = sizeof(TBBUTTONINFO);
-                info.dwMask = TBIF_TEXT;
-                info.pszText = (LPTSTR)(entry._title.length() ? entry._title.c_str() : TEXT(""));
-                SendMessage(_htoolbar, TB_SETBUTTONINFO, entry._id, (LPARAM)&info);
+                RECT item_rect = { 0 };
+                if (SendMessage(_htoolbar, TB_GETITEMRECT, query_index, (LPARAM)&item_rect)) {
+                    partial_redraw_rect.left = item_rect.left;
+                    use_partial_redraw = partial_redraw_rect.right > partial_redraw_rect.left &&
+                        partial_redraw_rect.bottom > partial_redraw_rect.top;
+                }
             }
+        }
+
+        if (!defer_reflow_repaint) {
+            if (use_partial_redraw)
+                RedrawWindow(_htoolbar, &partial_redraw_rect, NULL, RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW);
+            else
+                InvalidateRect(_htoolbar, NULL, FALSE);
+        }
+    }
+
+    for (size_t index = 0; index < desired_visible_order.size(); ++index) {
+        TaskBarMap::iterator found = _map.find(desired_visible_order[index]);
+        if (found == _map.end() || !found->second._id)
+            continue;
+
+        TaskBarEntry &entry = found->second;
+        BYTE state = entry._used ? entry._fsState : TBSTATE_ENABLED;
+        SendMessage(_htoolbar, TB_SETSTATE, entry._id, MAKELONG(state, 0));
+
+        if (!_no_task_title) {
+            TBBUTTONINFO info;
+            info.cbSize = sizeof(TBBUTTONINFO);
+            info.dwMask = TBIF_TEXT;
+            info.pszText = (LPTSTR)(entry._title.length() ? entry._title.c_str() : TEXT(""));
+            SendMessage(_htoolbar, TB_SETBUTTONINFO, entry._id, (LPARAM)&info);
         }
     }
 
     set<String> keys_to_delete;
 
     for (TaskBarMap::iterator it = _map.begin(); it != _map.end(); ++it) {
-        if (!it->second._used && !it->second._pinned)
+        if (!it->second._used && !it->second._pinned && !it->second._icon_animating_out)
             keys_to_delete.insert(it->first);
     }
 
@@ -1791,10 +2039,10 @@ void TaskBar::Refresh()
 
     if (rebuild_buttons || !_animate_highlights)
         SyncAnimationState(true);
-    RefreshAnimationTimer();
+    RefreshAnimationTimer(!defer_reflow_repaint);
 
     // Trigger parent resize so centered layout recalculates with new button count
-    if (_centered_layout) {
+    if (_centered_layout && rebuild_buttons) {
         HWND parent = GetParent(_hwnd);
         if (parent) {
             RECT rc;
@@ -1929,7 +2177,11 @@ bool TaskBar::HasRunningButtons() const
 
 bool TaskBar::IsAnimationRequired() const
 {
-    if (!_animate_highlights || !_htoolbar)
+    if (!_htoolbar)
+        return false;
+
+    bool animate_taskbar_icons = _animate_highlights && _centered_layout && UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title);
+    if (!_animate_highlights && !animate_taskbar_icons)
         return false;
 
     int hot_index = (int)SendMessage(_htoolbar, TB_GETHOTITEM, 0, 0);
@@ -1949,6 +2201,16 @@ bool TaskBar::IsAnimationRequired() const
         if (active_diff < 0.0f)
             active_diff = -active_diff;
 
+        if (animate_taskbar_icons && (it->second._icon_animating_in || it->second._icon_animating_out)) {
+            float target_visibility = it->second._icon_animating_out ? 0.0f : 1.0f;
+            float visibility_diff = it->second._icon_visibility - target_visibility;
+            if (visibility_diff < 0.0f)
+                visibility_diff = -visibility_diff;
+
+            if (visibility_diff > 0.01f)
+                return true;
+        }
+
         if (hover_diff > 0.01f || active_diff > 0.01f)
             return true;
     }
@@ -1958,10 +2220,12 @@ bool TaskBar::IsAnimationRequired() const
 
 bool TaskBar::AdvanceAnimations()
 {
-    if (!_animate_highlights || !_htoolbar)
+    if (!_htoolbar)
         return false;
 
     bool needs_more = false;
+    bool needs_refresh = false;
+    bool animate_taskbar_icons = _animate_highlights && _centered_layout && UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title);
     float blend = taskbar_draw::GetAnimationBlend();
     int hot_index = (int)SendMessage(_htoolbar, TB_GETHOTITEM, 0, 0);
 
@@ -1984,11 +2248,99 @@ bool TaskBar::AdvanceAnimations()
         if (active_diff < 0.0f)
             active_diff = -active_diff;
 
+        if (animate_taskbar_icons && (it->second._icon_animating_in || it->second._icon_animating_out)) {
+            float target_visibility = it->second._icon_animating_out ? 0.0f : 1.0f;
+            it->second._icon_visibility = taskbar_draw::EaseTowards(it->second._icon_visibility, target_visibility, blend);
+
+            float visibility_diff = it->second._icon_visibility - target_visibility;
+            if (visibility_diff < 0.0f)
+                visibility_diff = -visibility_diff;
+
+            if (visibility_diff > 0.01f) {
+                needs_more = true;
+            } else {
+                it->second._icon_visibility = target_visibility;
+                if (it->second._icon_animating_in)
+                    it->second._icon_animating_in = false;
+                if (it->second._icon_animating_out) {
+                    it->second._icon_animating_out = false;
+                    it->second._pending_remove = true;
+                    needs_refresh = true;
+                }
+            }
+        }
+
         if (hover_diff > 0.01f || active_diff > 0.01f)
             needs_more = true;
     }
 
+    if (needs_refresh) {
+        Refresh();
+        return IsAnimationRequired();
+    }
+
     return needs_more;
+}
+
+void TaskBar::InvalidateAnimatedButtons(bool fallback_to_full)
+{
+    if (!_htoolbar)
+        return;
+
+    RECT dirty_rect = { 0 };
+    bool has_dirty_rect = false;
+    ClientRect toolbar_client(_htoolbar);
+    int hot_index = (int)SendMessage(_htoolbar, TB_GETHOTITEM, 0, 0);
+    bool animate_taskbar_icons = _animate_highlights && _centered_layout && UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title);
+
+    for (TaskBarMap::const_iterator it = _map.begin(); it != _map.end(); ++it) {
+        if (!it->second._id)
+            continue;
+
+        LONG state = (LONG)SendMessage(_htoolbar, TB_GETSTATE, it->second._id, 0);
+        float target_hover = it->second._btn_idx == hot_index ? 1.0f : 0.0f;
+        float target_active = ((state & TBSTATE_CHECKED) || (state & TBSTATE_PRESSED)) ? 1.0f : 0.0f;
+
+        float hover_diff = it->second._hover_progress - target_hover;
+        if (hover_diff < 0.0f)
+            hover_diff = -hover_diff;
+
+        float active_diff = it->second._active_progress - target_active;
+        if (active_diff < 0.0f)
+            active_diff = -active_diff;
+
+        bool redraw_entry = (_animate_highlights && (hover_diff > 0.01f || active_diff > 0.01f));
+        if (!redraw_entry && animate_taskbar_icons)
+            redraw_entry = it->second._icon_animating_in || it->second._icon_animating_out;
+
+        if (!redraw_entry)
+            continue;
+
+        int button_index = (int)SendMessage(_htoolbar, TB_COMMANDTOINDEX, it->second._id, 0);
+        if (button_index < 0)
+            continue;
+
+        RECT item_rect = { 0 };
+        if (!SendMessage(_htoolbar, TB_GETITEMRECT, button_index, (LPARAM)&item_rect))
+            continue;
+
+        if (animate_taskbar_icons && it->second._icon_animating_in) {
+            item_rect.right = toolbar_client.right;
+        }
+
+        if (!has_dirty_rect) {
+            dirty_rect = item_rect;
+            has_dirty_rect = true;
+        } else {
+            UnionRect(&dirty_rect, &dirty_rect, &item_rect);
+        }
+    }
+
+    if (has_dirty_rect) {
+        RedrawWindow(_htoolbar, &dirty_rect, NULL, RDW_INVALIDATE | RDW_NOERASE);
+    } else if (fallback_to_full) {
+        RedrawWindow(_htoolbar, NULL, NULL, RDW_INVALIDATE | RDW_NOERASE);
+    }
 }
 
 void TaskBar::RefreshAnimationTimer(bool invalidate)
@@ -2002,7 +2354,7 @@ void TaskBar::RefreshAnimationTimer(bool invalidate)
             _animation_timer_running = true;
         }
         if (invalidate)
-            InvalidateRect(_htoolbar, NULL, FALSE);
+            InvalidateAnimatedButtons(true);
     } else if (_animation_timer_running) {
         KillTimer(_hwnd, ID_TIMER_ANIMATEBUTTONS);
         _animation_timer_running = false;
@@ -2014,6 +2366,8 @@ void TaskBar::SyncAnimationState(bool snap_to_target)
     if (!_htoolbar)
         return;
 
+    bool needs_refresh = false;
+
     int hot_index = (int)SendMessage(_htoolbar, TB_GETHOTITEM, 0, 0);
     for (TaskBarMap::iterator it = _map.begin(); it != _map.end(); ++it) {
         LONG state = (LONG)SendMessage(_htoolbar, TB_GETSTATE, it->second._id, 0);
@@ -2023,5 +2377,22 @@ void TaskBar::SyncAnimationState(bool snap_to_target)
             it->second._hover_progress = target_hover;
             it->second._active_progress = target_active;
         }
+
+        if (!_animate_highlights) {
+            if (it->second._icon_animating_in) {
+                it->second._icon_animating_in = false;
+                it->second._icon_visibility = 1.0f;
+            }
+
+            if (it->second._icon_animating_out) {
+                it->second._icon_animating_out = false;
+                it->second._icon_visibility = 0.0f;
+                it->second._pending_remove = true;
+                needs_refresh = true;
+            }
+        }
     }
+
+    if (needs_refresh)
+        Refresh();
 }

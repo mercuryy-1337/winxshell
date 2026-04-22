@@ -295,7 +295,7 @@ HBITMAP create_bitmap_from_icon(HICON hIcon, HBRUSH hbrush_bkgnd, HDC hdc_wnd, i
     return hbmp;
 }
 
-BOOL draw_icon_high_quality(HDC hdc, HICON hIcon, const RECT &rect)
+BOOL draw_icon_high_quality(HDC hdc, HICON hIcon, const RECT &rect, BYTE alpha)
 {
     if (!hdc || !hIcon)
         return FALSE;
@@ -308,6 +308,19 @@ BOOL draw_icon_high_quality(HDC hdc, HICON hIcon, const RECT &rect)
     Gdiplus::Bitmap *icon_bitmap = NULL;
     Gdiplus::Rect content_bounds;
     if (GetIconContentBounds(hIcon, &icon_bitmap, &content_bounds)) {
+        Gdiplus::ImageAttributes image_attributes;
+        bool use_alpha = alpha < 255;
+        if (use_alpha) {
+            Gdiplus::ColorMatrix color_matrix = {
+                1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+                0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                0.0f, 0.0f, 0.0f, (Gdiplus::REAL)alpha / 255.0f, 0.0f,
+                0.0f, 0.0f, 0.0f, 0.0f, 1.0f
+            };
+            image_attributes.SetColorMatrix(&color_matrix, Gdiplus::ColorMatrixFlagsDefault, Gdiplus::ColorAdjustTypeBitmap);
+        }
+
         int draw_width = width;
         int draw_height = height;
         if (content_bounds.Width > 0 && content_bounds.Height > 0) {
@@ -339,7 +352,8 @@ BOOL draw_icon_high_quality(HDC hdc, HICON hIcon, const RECT &rect)
                 content_bounds.Y,
                 content_bounds.Width,
                 content_bounds.Height,
-                Gdiplus::UnitPixel);
+                Gdiplus::UnitPixel,
+                use_alpha ? &image_attributes : NULL);
 
             Gdiplus::Graphics graphics(hdc);
             graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
@@ -353,7 +367,8 @@ BOOL draw_icon_high_quality(HDC hdc, HICON hIcon, const RECT &rect)
                 0,
                 sampled_width,
                 sampled_height,
-                Gdiplus::UnitPixel);
+                Gdiplus::UnitPixel,
+                use_alpha ? &image_attributes : NULL);
         } else {
             Gdiplus::Graphics graphics(hdc);
             graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
@@ -367,7 +382,8 @@ BOOL draw_icon_high_quality(HDC hdc, HICON hIcon, const RECT &rect)
                 content_bounds.Y,
                 content_bounds.Width,
                 content_bounds.Height,
-                Gdiplus::UnitPixel);
+                Gdiplus::UnitPixel,
+                use_alpha ? &image_attributes : NULL);
         }
         delete icon_bitmap;
         return TRUE;

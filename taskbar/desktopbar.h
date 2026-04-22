@@ -84,6 +84,12 @@ struct DesktopBar : public
     static HWND Create();
 
 protected:
+    enum LayoutSlideMode {
+        LAYOUT_SLIDE_GENERIC = 0,
+        LAYOUT_SLIDE_TASKBAR_GROW,
+        LAYOUT_SLIDE_TASKBAR_SHRINK,
+    };
+
     struct LayoutRects {
         LayoutRects()
             : _hasStart(false),
@@ -119,6 +125,7 @@ protected:
     int     _start_button_gap;
     bool    _centered_layout;
     bool    _alignment_slide_active;
+    LayoutSlideMode _alignment_slide_mode;
     double  _alignment_slide_start_ms;
     double  _alignment_slide_duration_ms;
     int     _alignment_slide_cx;
@@ -134,7 +141,7 @@ protected:
     void    BuildChildRects(int cx, int cy, LayoutRects *layout) const;
     void    ApplyChildRects(const LayoutRects &layout);
     void    StopAlignmentSlideAnimation(bool apply_target = true);
-    void    StartAlignmentSlideAnimation(int cx, int cy, const LayoutRects &from_layout);
+    void    StartAlignmentSlideAnimation(int cx, int cy, const LayoutRects &from_layout, bool taskbar_reflow = false);
     void    Resize(int cx, int cy);
     void    RefreshLayoutMetrics();
     void    ApplyTaskbarAlignmentSetting(bool centered, bool persist = true);

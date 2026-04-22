@@ -1005,6 +1005,7 @@ DesktopBar::DesktopBar(HWND hwnd)
     _start_button_gap(0),
     _centered_layout(false),
     _alignment_slide_active(false),
+    _alignment_slide_mode(LAYOUT_SLIDE_GENERIC),
     _alignment_slide_start_ms(0.0),
     _alignment_slide_duration_ms(260.0),
     _alignment_slide_cx(0),
@@ -1298,6 +1299,17 @@ static double EaseInOutCubic(double progress)
     return 1.0 - (inverse * inverse * inverse) / 2.0;
 }
 
+static double EaseOutCubic(double progress)
+{
+    if (progress <= 0.0)
+        return 0.0;
+    if (progress >= 1.0)
+        return 1.0;
+
+    double inverse = 1.0 - progress;
+    return 1.0 - inverse * inverse * inverse;
+}
+
 static int LerpInt(int from, int to, double progress)
 {
     double value = from + (to - from) * progress;
@@ -1482,13 +1494,14 @@ void DesktopBar::StopAlignmentSlideAnimation(bool apply_target)
 {
     bool was_active = _alignment_slide_active;
     _alignment_slide_active = false;
+    _alignment_slide_mode = LAYOUT_SLIDE_GENERIC;
     KillTimer(_hwnd, ID_TIMER_TASKBAR_ALIGNMENT_SLIDE);
 
     if (apply_target && was_active)
         ApplyChildRects(_alignment_slide_to);
 }
 
-void DesktopBar::StartAlignmentSlideAnimation(int cx, int cy, const LayoutRects &from_layout)
+void DesktopBar::StartAlignmentSlideAnimation(int cx, int cy, const LayoutRects &from_layout, bool taskbar_reflow)
 {
     StopAlignmentSlideAnimation(false);
 
@@ -1496,6 +1509,7 @@ void DesktopBar::StartAlignmentSlideAnimation(int cx, int cy, const LayoutRects 
     _alignment_slide_cx = cx;
     _alignment_slide_cy = cy;
     BuildChildRects(cx, cy, &_alignment_slide_to);
+    _alignment_slide_mode = LAYOUT_SLIDE_GENERIC;
 
     bool changed = false;
     if (_alignment_slide_from._hasStart == _alignment_slide_to._hasStart)
@@ -1516,6 +1530,16 @@ void DesktopBar::StartAlignmentSlideAnimation(int cx, int cy, const LayoutRects 
     if (!changed) {
         ApplyChildRects(_alignment_slide_to);
         return;
+    }
+
+    if (taskbar_reflow && _alignment_slide_from._hasTaskBar && _alignment_slide_to._hasTaskBar) {
+        int from_width = _alignment_slide_from._taskBar.right - _alignment_slide_from._taskBar.left;
+        int to_width = _alignment_slide_to._taskBar.right - _alignment_slide_to._taskBar.left;
+
+        if (to_width > from_width)
+            _alignment_slide_mode = LAYOUT_SLIDE_TASKBAR_GROW;
+        else if (to_width < from_width)
+            _alignment_slide_mode = LAYOUT_SLIDE_TASKBAR_SHRINK;
     }
 
     _alignment_slide_active = true;
@@ -2074,6 +2098,11 @@ LRESULT DesktopBar::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
 
     case PM_RESIZE_CHILDREN: {
         ClientRect size(_hwnd);
+        if (_centered_layout && taskbar_draw::IsModernTaskbarEnabled() && !_hwndrebar && wparam != 0 && lparam != 0) {
+            LayoutRects from_layout;
+            CaptureChildRects(&from_layout);
+            StartAlignmentSlideAnimation(size.right, size.bottom, from_layout, true);
+        }
         Resize(size.right, size.bottom);
         break;
     }
@@ -2256,6 +2285,7 @@ void DesktopBar::Resize(int cx, int cy)
         double progress = (double)elapsed / duration;
         if (progress >= 1.0) {
             _alignment_slide_active = false;
+            _alignment_slide_mode = LAYOUT_SLIDE_GENERIC;
             KillTimer(_hwnd, ID_TIMER_TASKBAR_ALIGNMENT_SLIDE);
             ApplyChildRects(_alignment_slide_to);
         } else {
@@ -2266,8 +2296,20 @@ void DesktopBar::Resize(int cx, int cy)
                 animated._start = LerpRect(_alignment_slide_from._start, _alignment_slide_to._start, eased);
             if (_alignment_slide_from._hasQuickLaunch && _alignment_slide_to._hasQuickLaunch)
                 animated._quickLaunch = LerpRect(_alignment_slide_from._quickLaunch, _alignment_slide_to._quickLaunch, eased);
-            if (_alignment_slide_from._hasTaskBar && _alignment_slide_to._hasTaskBar)
-                animated._taskBar = LerpRect(_alignment_slide_from._taskBar, _alignment_slide_to._taskBar, eased);
+            if (_alignment_slide_from._hasTaskBar && _alignment_slide_to._hasTaskBar) {
+                const RECT &from_taskbar = _alignment_slide_from._taskBar;
+                const RECT &to_taskbar = _alignment_slide_to._taskBar;
+
+                if (_alignment_slide_mode == LAYOUT_SLIDE_TASKBAR_GROW || _alignment_slide_mode == LAYOUT_SLIDE_TASKBAR_SHRINK) {
+                    int from_width = from_taskbar.right - from_taskbar.left;
+                    animated._taskBar.left = LerpInt(from_taskbar.left, to_taskbar.left, eased);
+                    animated._taskBar.top = LerpInt(from_taskbar.top, to_taskbar.top, eased);
+                    animated._taskBar.bottom = LerpInt(from_taskbar.bottom, to_taskbar.bottom, eased);
+                    animated._taskBar.right = animated._taskBar.left + from_width;
+                } else {
+                    animated._taskBar = LerpRect(from_taskbar, to_taskbar, eased);
+                }
+            }
 
             ApplyChildRects(animated);
         }

@@ -76,6 +76,7 @@ struct TaskBarEntry {
     BYTE    _fsState;
     float   _hover_progress;
     float   _active_progress;
+    float   _icon_visibility;
     DWORD   _pid;
     int     _window_group_count;
     HWND    _primary_hwnd;
@@ -84,6 +85,9 @@ struct TaskBarEntry {
     String  _launch_path;
     TaskbarLaunchKind _launch_kind;
     bool    _pinned;
+    bool    _icon_animating_in;
+    bool    _icon_animating_out;
+    bool    _pending_remove;
     vector<HWND> _windows;
 };
 
@@ -149,6 +153,7 @@ protected:
     bool    HasRunningButtons() const;
     bool    IsAnimationRequired() const;
     bool    AdvanceAnimations();
+    void    InvalidateAnimatedButtons(bool fallback_to_full = false);
     void    RefreshAnimationTimer(bool invalidate = true);
     void    SyncAnimationState(bool snap_to_target);
 };
