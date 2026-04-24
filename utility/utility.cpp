@@ -253,6 +253,258 @@ BOOL TryGetPeaZipPath(PTSTR peazip_path, size_t path_count)
     return TRUE;
 }
 
+static bool SetRegistryStringValue(HKEY root, LPCTSTR subkey, LPCTSTR value_name, LPCTSTR value_data)
+{
+    if (!subkey || !*subkey || !value_data)
+        return false;
+
+    HKEY hkey = NULL;
+    LONG status = RegCreateKeyEx(root,
+        subkey,
+        0,
+        NULL,
+        REG_OPTION_NON_VOLATILE,
+        KEY_SET_VALUE,
+        NULL,
+        &hkey,
+        NULL);
+    if (status != ERROR_SUCCESS)
+        return false;
+
+    status = RegSetValueEx(hkey,
+        value_name,
+        0,
+        REG_SZ,
+        (const BYTE *)value_data,
+        (DWORD)((_tcslen(value_data) + 1) * sizeof(TCHAR)));
+    RegCloseKey(hkey);
+    return status == ERROR_SUCCESS;
+}
+
+static bool SetRegistryNoneValue(HKEY root, LPCTSTR subkey, LPCTSTR value_name)
+{
+    if (!subkey || !*subkey)
+        return false;
+
+    HKEY hkey = NULL;
+    LONG status = RegCreateKeyEx(root,
+        subkey,
+        0,
+        NULL,
+        REG_OPTION_NON_VOLATILE,
+        KEY_SET_VALUE,
+        NULL,
+        &hkey,
+        NULL);
+    if (status != ERROR_SUCCESS)
+        return false;
+
+    status = RegSetValueEx(hkey, value_name, 0, REG_NONE, NULL, 0);
+    RegCloseKey(hkey);
+    return status == ERROR_SUCCESS;
+}
+
+static bool QueryRegistryStringValue(HKEY root, LPCTSTR subkey, LPCTSTR value_name, PTSTR value_data, DWORD value_count)
+{
+    if (!subkey || !*subkey || !value_data || value_count == 0)
+        return false;
+
+    value_data[0] = TEXT('\0');
+
+    HKEY hkey = NULL;
+    LONG status = RegOpenKeyEx(root, subkey, 0, KEY_QUERY_VALUE, &hkey);
+    if (status != ERROR_SUCCESS)
+        return false;
+
+    DWORD type = REG_NONE;
+    DWORD byte_count = value_count * sizeof(TCHAR);
+    status = RegQueryValueEx(hkey, value_name, 0, &type, (LPBYTE)value_data, &byte_count);
+    RegCloseKey(hkey);
+
+    if (status != ERROR_SUCCESS)
+        return false;
+
+    if (type != REG_SZ && type != REG_EXPAND_SZ)
+        return false;
+
+    value_data[value_count - 1] = TEXT('\0');
+    return value_data[0] != TEXT('\0');
+}
+
+static bool DeleteRegistryTreeIfPresent(HKEY root, LPCTSTR subkey)
+{
+    if (!subkey || !*subkey)
+        return false;
+
+    LONG status = SHDeleteKey(root, subkey);
+    return status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND;
+}
+
+static bool DeleteRegistryTreeBestEffort(HKEY root, LPCTSTR subkey)
+{
+    if (!subkey || !*subkey)
+        return false;
+
+    LONG status = SHDeleteKey(root, subkey);
+    return status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND || status == ERROR_ACCESS_DENIED;
+}
+
+static bool ConfigureExplorerOpenWithForExtension(LPCTSTR extension, LPCTSTR progid, LPCTSTR app_name)
+{
+    if (!extension || !*extension || !progid || !*progid || !app_name || !*app_name)
+        return false;
+
+    String base_key = FmtString(TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\%s"), extension);
+    String open_with_progids_key = base_key + TEXT("\\OpenWithProgids");
+    String open_with_list_key = base_key + TEXT("\\OpenWithList");
+
+    bool success = true;
+    success = success && SetRegistryNoneValue(HKEY_CURRENT_USER, open_with_progids_key.c_str(), progid);
+    success = success && SetRegistryStringValue(HKEY_CURRENT_USER, open_with_list_key.c_str(), TEXT("a"), app_name);
+    success = success && SetRegistryStringValue(HKEY_CURRENT_USER, open_with_list_key.c_str(), TEXT("MRUList"), TEXT("a"));
+
+    // Best effort: if UserChoice is removable, fallback resolution can use our per-user class mapping.
+    String user_choice_key = base_key + TEXT("\\UserChoice");
+    success = success && DeleteRegistryTreeBestEffort(HKEY_CURRENT_USER, user_choice_key.c_str());
+    return success;
+}
+
+static bool ClearExplorerAssociationStateForExtension(LPCTSTR extension)
+{
+    if (!extension || !*extension)
+        return false;
+
+    String base_key = FmtString(TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\%s"), extension);
+    bool success = true;
+    success = success && DeleteRegistryTreeBestEffort(HKEY_CURRENT_USER, (base_key + TEXT("\\UserChoice")).c_str());
+    success = success && DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, (base_key + TEXT("\\OpenWithProgids")).c_str());
+    success = success && DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, (base_key + TEXT("\\OpenWithList")).c_str());
+    return success;
+}
+
+static bool CommandReferencesExecutable(LPCTSTR command, LPCTSTR executable_path)
+{
+    if (!command || !*command || !executable_path || !*executable_path)
+        return false;
+
+    return StrStrI(command, executable_path) != NULL;
+}
+
+BOOL IsPeaZipDefaultArchiveAssociation()
+{
+    static const TCHAR *kZipExtKey = TEXT("Software\\Classes\\.zip");
+    static const TCHAR *kRarExtKey = TEXT("Software\\Classes\\.rar");
+    static const TCHAR *kZipProgId = TEXT("PeaZip.zip");
+    static const TCHAR *kRarProgId = TEXT("PeaZip.rar");
+    static const TCHAR *kZipCommandKey = TEXT("Software\\Classes\\PeaZip.zip\\shell\\open\\command");
+    static const TCHAR *kRarCommandKey = TEXT("Software\\Classes\\PeaZip.rar\\shell\\open\\command");
+    static const TCHAR *kZipUserChoiceKey = TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.zip\\UserChoice");
+    static const TCHAR *kRarUserChoiceKey = TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.rar\\UserChoice");
+
+    TCHAR peazip_path[MAX_PATH] = { 0 };
+    if (!TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path)))
+        return FALSE;
+
+    TCHAR zip_progid[128] = { 0 };
+    TCHAR rar_progid[128] = { 0 };
+    if (!QueryRegistryStringValue(HKEY_CURRENT_USER, kZipExtKey, NULL, zip_progid, COUNTOF(zip_progid)) ||
+        !QueryRegistryStringValue(HKEY_CURRENT_USER, kRarExtKey, NULL, rar_progid, COUNTOF(rar_progid))) {
+        return FALSE;
+    }
+
+    if (_tcsicmp(zip_progid, kZipProgId) != 0 || _tcsicmp(rar_progid, kRarProgId) != 0)
+        return FALSE;
+
+    TCHAR zip_command[MAX_PATH * 2] = { 0 };
+    TCHAR rar_command[MAX_PATH * 2] = { 0 };
+    if (!QueryRegistryStringValue(HKEY_CURRENT_USER, kZipCommandKey, NULL, zip_command, COUNTOF(zip_command)) ||
+        !QueryRegistryStringValue(HKEY_CURRENT_USER, kRarCommandKey, NULL, rar_command, COUNTOF(rar_command))) {
+        return FALSE;
+    }
+
+    if (!CommandReferencesExecutable(zip_command, peazip_path) || !CommandReferencesExecutable(rar_command, peazip_path))
+        return FALSE;
+
+    TCHAR zip_userchoice_progid[128] = { 0 };
+    if (QueryRegistryStringValue(HKEY_CURRENT_USER, kZipUserChoiceKey, TEXT("ProgId"), zip_userchoice_progid, COUNTOF(zip_userchoice_progid)) &&
+        _tcsicmp(zip_userchoice_progid, kZipProgId) != 0) {
+        return FALSE;
+    }
+
+    TCHAR rar_userchoice_progid[128] = { 0 };
+    if (QueryRegistryStringValue(HKEY_CURRENT_USER, kRarUserChoiceKey, TEXT("ProgId"), rar_userchoice_progid, COUNTOF(rar_userchoice_progid)) &&
+        _tcsicmp(rar_userchoice_progid, kRarProgId) != 0) {
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+BOOL SetPeaZipDefaultArchiveAssociation(BOOL enabled)
+{
+    static const TCHAR *kZipExtKey = TEXT("Software\\Classes\\.zip");
+    static const TCHAR *kRarExtKey = TEXT("Software\\Classes\\.rar");
+    static const TCHAR *kZipOpenWithProgidsKey = TEXT("Software\\Classes\\.zip\\OpenWithProgids");
+    static const TCHAR *kRarOpenWithProgidsKey = TEXT("Software\\Classes\\.rar\\OpenWithProgids");
+    static const TCHAR *kZipProgIdBaseKey = TEXT("Software\\Classes\\PeaZip.zip");
+    static const TCHAR *kRarProgIdBaseKey = TEXT("Software\\Classes\\PeaZip.rar");
+    static const TCHAR *kZipCommandKey = TEXT("Software\\Classes\\PeaZip.zip\\shell\\open\\command");
+    static const TCHAR *kRarCommandKey = TEXT("Software\\Classes\\PeaZip.rar\\shell\\open\\command");
+    static const TCHAR *kZipIconKey = TEXT("Software\\Classes\\PeaZip.zip\\DefaultIcon");
+    static const TCHAR *kRarIconKey = TEXT("Software\\Classes\\PeaZip.rar\\DefaultIcon");
+    static const TCHAR *kPeaZipAppBaseKey = TEXT("Software\\Classes\\Applications\\peazip.exe");
+    static const TCHAR *kPeaZipAppCommandKey = TEXT("Software\\Classes\\Applications\\peazip.exe\\shell\\open\\command");
+    static const TCHAR *kPeaZipSupportedTypesKey = TEXT("Software\\Classes\\Applications\\peazip.exe\\SupportedTypes");
+    static const TCHAR *kZipProgId = TEXT("PeaZip.zip");
+    static const TCHAR *kRarProgId = TEXT("PeaZip.rar");
+
+    bool success = true;
+
+    if (enabled) {
+        TCHAR peazip_path[MAX_PATH] = { 0 };
+        if (!TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path)))
+            return FALSE;
+
+        TCHAR open_command[MAX_PATH * 2] = { 0 };
+        _sntprintf(open_command, COUNTOF(open_command), TEXT("\"%s\" \"%%1\""), peazip_path);
+        open_command[COUNTOF(open_command) - 1] = TEXT('\0');
+
+        TCHAR icon_command[MAX_PATH * 2] = { 0 };
+        _sntprintf(icon_command, COUNTOF(icon_command), TEXT("\"%s\",0"), peazip_path);
+        icon_command[COUNTOF(icon_command) - 1] = TEXT('\0');
+
+        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kZipProgIdBaseKey, NULL, TEXT("ZIP Archive"));
+        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kRarProgIdBaseKey, NULL, TEXT("RAR Archive"));
+        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kZipCommandKey, NULL, open_command);
+        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kRarCommandKey, NULL, open_command);
+        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kZipIconKey, NULL, icon_command);
+        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kRarIconKey, NULL, icon_command);
+        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kZipExtKey, NULL, kZipProgId);
+        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kRarExtKey, NULL, kRarProgId);
+        success = success && SetRegistryNoneValue(HKEY_CURRENT_USER, kZipOpenWithProgidsKey, kZipProgId);
+        success = success && SetRegistryNoneValue(HKEY_CURRENT_USER, kRarOpenWithProgidsKey, kRarProgId);
+        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kPeaZipAppBaseKey, NULL, TEXT("PeaZip"));
+        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kPeaZipAppCommandKey, NULL, open_command);
+        success = success && SetRegistryNoneValue(HKEY_CURRENT_USER, kPeaZipSupportedTypesKey, TEXT(".zip"));
+        success = success && SetRegistryNoneValue(HKEY_CURRENT_USER, kPeaZipSupportedTypesKey, TEXT(".rar"));
+        success = success && ConfigureExplorerOpenWithForExtension(TEXT(".zip"), kZipProgId, TEXT("peazip.exe"));
+        success = success && ConfigureExplorerOpenWithForExtension(TEXT(".rar"), kRarProgId, TEXT("peazip.exe"));
+    } else {
+        success = success && ClearExplorerAssociationStateForExtension(TEXT(".zip"));
+        success = success && ClearExplorerAssociationStateForExtension(TEXT(".rar"));
+        success = success && DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, kZipExtKey);
+        success = success && DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, kRarExtKey);
+        success = success && DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, kZipProgIdBaseKey);
+        success = success && DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, kRarProgIdBaseKey);
+        success = success && DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, kPeaZipAppBaseKey);
+    }
+
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);
+    if (enabled && success && !IsPeaZipDefaultArchiveAssociation())
+        return FALSE;
+    return success ? TRUE : FALSE;
+}
+
 static bool TryGetPeaZipLaunchTarget(LPCTSTR cmd, LPCTSTR parameters, String &target_path)
 {
     target_path.erase();

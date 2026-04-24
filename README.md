@@ -2,7 +2,13 @@
 
 Explauncher is a native Win32 shell replacement and launcher for Windows. It combines a desktop shell, taskbar, start menu, search experience, Lua scripting support, and a packaged theme/UI system in a single C++ codebase.
 
-This repository is the rebranded Explauncher line and the current public app version is 1.0.5.
+This repository is the rebranded Explauncher line and the current public app version is 1.0.6.
+
+## Notable 1.0.6 changes
+
+- Bumped the public Explauncher version to `1.0.6`.
+- Added a taskbar right-click toggle for setting PeaZip as the per-user default app for `.zip` and `.rar` files.
+- The toggle writes user-level associations under `HKCU\\Software\\Classes`, so the change does not require admin rights.
 
 ## Notable 1.0.5 changes
 
@@ -36,23 +42,15 @@ This repository is the rebranded Explauncher line and the current public app ver
 
 ### Build commands
 
-Build Win32 Release:
+Build x64 Release (default):
 
 ```powershell
-& "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" \
-  "c:\Users\user\Documents\Cpp\winxshell\Explauncher_VS2022.sln" \
-  /t:Build /p:Configuration=Release /p:Platform=Win32 /m
-```
-
-Build x64 Release:
-
-```powershell
-& "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" \
-  "c:\Users\user\Documents\Cpp\winxshell\Explauncher_VS2022.sln" \
+& "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" `
+  "c:\Users\user\Documents\Cpp\winxshell\Explauncher_VS2022.sln" `
   /t:Build /p:Configuration=Release /p:Platform=x64 /m
 ```
 
-Successful Release builds output `Explauncher.exe` and `ExplauncherC.exe` into `Win32/Release` and `x64/Release`.
+Successful Release builds output `Explauncher.exe` and `ExplauncherC.exe` into `x64/Release`.
 
 ## Common runtime modes
 

@@ -256,6 +256,8 @@ using namespace _com_util;
 extern BOOL launch_file(HWND hwnd, LPCTSTR cmd, UINT nCmdShow = SW_SHOWNORMAL, LPCTSTR parameters = NULL);
 extern BOOL TryGetPeaZipPath(PTSTR peazip_path, size_t path_count);
 extern BOOL launch_folder_with_peazip(HWND hwnd, LPCTSTR folder_path, UINT nCmdShow = SW_SHOWNORMAL);
+extern BOOL IsPeaZipDefaultArchiveAssociation();
+extern BOOL SetPeaZipDefaultArchiveAssociation(BOOL enabled);
 #ifdef UNICODE
 extern BOOL launch_fileA(HWND hwnd, LPSTR cmd, UINT nCmdShow = SW_SHOWNORMAL, LPCSTR parameters = NULL);
 #else

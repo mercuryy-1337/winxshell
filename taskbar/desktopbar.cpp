@@ -79,6 +79,19 @@ enum TaskbarAlignmentChoice {
     TASKBAR_ALIGNMENT_CHOICE_LEFT,
 };
 
+enum TaskbarContextMenuResult {
+    TASKBAR_CONTEXT_MENU_RESULT_NONE = 0,
+    TASKBAR_CONTEXT_MENU_RESULT_ALIGN_CENTER,
+    TASKBAR_CONTEXT_MENU_RESULT_ALIGN_LEFT,
+    TASKBAR_CONTEXT_MENU_RESULT_TOGGLE_PEAZIP_ASSOC,
+};
+
+enum TaskbarContextMenuItem {
+    TASKBAR_CONTEXT_MENU_ITEM_NONE = 0,
+    TASKBAR_CONTEXT_MENU_ITEM_ALIGNMENT,
+    TASKBAR_CONTEXT_MENU_ITEM_PEAZIP_ASSOC,
+};
+
 #define PM_TASKBAR_ALIGNMENT_SELECT        (WM_APP + 0x140)
 #define PM_TASKBAR_ALIGNMENT_SET_HOT       (WM_APP + 0x141)
 #define PM_TASKBAR_ALIGNMENT_CLOSE_SUBMENU (WM_APP + 0x142)
@@ -90,6 +103,7 @@ struct TaskbarAlignmentMenuCreateInfo {
           _font(NULL),
           _screen_anchor(),
           _centered(true),
+                    _peazip_default_archives(false),
           _main_panel_rect(),
           _submenu_panel_rect()
     {
@@ -99,6 +113,7 @@ struct TaskbarAlignmentMenuCreateInfo {
     HFONT   _font;
     POINT   _screen_anchor;
     bool    _centered;
+    bool    _peazip_default_archives;
     RECT    _main_panel_rect;
     RECT    _submenu_panel_rect;
 };
@@ -622,8 +637,10 @@ struct TaskbarAlignmentMenuPopup : public Window {
           _owner(info._owner),
           _font(info._font ? info._font : g_Globals._hDefaultFont),
           _centered(info._centered),
-          _result(TASKBAR_ALIGNMENT_CHOICE_NONE),
+                    _peazip_default_archives(info._peazip_default_archives),
+                    _result(TASKBAR_CONTEXT_MENU_RESULT_NONE),
           _hot_choice(info._centered ? TASKBAR_ALIGNMENT_CHOICE_CENTER : TASKBAR_ALIGNMENT_CHOICE_LEFT),
+                    _hot_item(TASKBAR_CONTEXT_MENU_ITEM_ALIGNMENT),
           _tracking_mouse(false),
           _submenu_visible(false),
           _submenu_hwnd(NULL),
@@ -650,6 +667,11 @@ struct TaskbarAlignmentMenuPopup : public Window {
         return DPI_SY(32);
     }
 
+    static int GetItemGap()
+    {
+        return DPI_SY(4);
+    }
+
     static int GetPanelPadding()
     {
         return GetPopupPanelPadding();
@@ -657,9 +679,10 @@ struct TaskbarAlignmentMenuPopup : public Window {
 
     static SIZE MeasureMainPanel(HFONT font)
     {
-        SIZE result = { DPI_SX(168), GetItemHeight() + GetPanelPadding() * 2 };
-        int text_width = MeasurePopupLabelWidth(font, TEXT("Taskbar alignment"));
-        result.cx = max(result.cx, text_width + DPI_SX(60));
+        SIZE result = { DPI_SX(188), GetItemHeight() * 2 + GetItemGap() + GetPanelPadding() * 2 };
+        int align_text_width = MeasurePopupLabelWidth(font, TEXT("Taskbar alignment"));
+        int peazip_text_width = MeasurePopupLabelWidth(font, TEXT("PeaZip for .zip/.rar"));
+        result.cx = max(result.cx, max(align_text_width, peazip_text_width) + DPI_SX(76));
         return result;
     }
 
@@ -668,7 +691,7 @@ struct TaskbarAlignmentMenuPopup : public Window {
         return TaskbarAlignmentSubmenuPopup::MeasurePanel(font);
     }
 
-    static TaskbarAlignmentChoice Show(HWND owner, HFONT font, POINT screen_anchor, bool centered)
+    static TaskbarContextMenuResult Show(HWND owner, HFONT font, POINT screen_anchor, bool centered, bool peazip_default_archives)
     {
         if (g_taskbar_alignment_menu_popup && IsWindow(g_taskbar_alignment_menu_popup))
             DestroyWindow(g_taskbar_alignment_menu_popup);
@@ -678,6 +701,7 @@ struct TaskbarAlignmentMenuPopup : public Window {
         info._font = font;
         info._screen_anchor = screen_anchor;
         info._centered = centered;
+        info._peazip_default_archives = peazip_default_archives;
 
         SIZE main_panel_size = MeasureMainPanel(font);
         SIZE submenu_panel_size = MeasureSubmenuPanel(font);
@@ -721,7 +745,7 @@ struct TaskbarAlignmentMenuPopup : public Window {
         if (hwnd)
             g_taskbar_alignment_menu_popup = hwnd;
         TaskbarAlignmentMenuPopup *popup = GET_WINDOW(TaskbarAlignmentMenuPopup, hwnd);
-        return popup ? popup->ShowModal() : TASKBAR_ALIGNMENT_CHOICE_NONE;
+        return popup ? popup->ShowModal() : TASKBAR_CONTEXT_MENU_RESULT_NONE;
     }
 
 protected:
@@ -739,13 +763,41 @@ protected:
         return MakePopupRect(0, 0, _main_panel_size.cx, _main_panel_size.cy);
     }
 
-    RECT GetRootItemRect() const
+    RECT GetAlignmentItemRect() const
     {
         RECT panel_rect = GetMainPanelRect();
         return MakePopupRect(panel_rect.left + GetPanelPadding(),
             panel_rect.top + GetPanelPadding(),
             (panel_rect.right - panel_rect.left) - GetPanelPadding() * 2,
             GetItemHeight());
+    }
+
+    RECT GetPeaZipAssocItemRect() const
+    {
+        RECT rect = GetAlignmentItemRect();
+        OffsetRect(&rect, 0, GetItemHeight() + GetItemGap());
+        return rect;
+    }
+
+    TaskbarContextMenuResult ResultFromAlignmentChoice(TaskbarAlignmentChoice choice) const
+    {
+        if (choice == TASKBAR_ALIGNMENT_CHOICE_CENTER)
+            return TASKBAR_CONTEXT_MENU_RESULT_ALIGN_CENTER;
+        if (choice == TASKBAR_ALIGNMENT_CHOICE_LEFT)
+            return TASKBAR_CONTEXT_MENU_RESULT_ALIGN_LEFT;
+        return TASKBAR_CONTEXT_MENU_RESULT_NONE;
+    }
+
+    TaskbarContextMenuItem HitTestItem(POINT pt) const
+    {
+        RECT alignment_item_rect = GetAlignmentItemRect();
+        RECT peazip_item_rect = GetPeaZipAssocItemRect();
+
+        if (PtInRect(&alignment_item_rect, pt))
+            return TASKBAR_CONTEXT_MENU_ITEM_ALIGNMENT;
+        if (PtInRect(&peazip_item_rect, pt))
+            return TASKBAR_CONTEXT_MENU_ITEM_PEAZIP_ASSOC;
+        return TASKBAR_CONTEXT_MENU_ITEM_NONE;
     }
 
     TaskbarAlignmentChoice GetCheckedChoice() const
@@ -774,25 +826,40 @@ protected:
         COLORREF item_text = RGB(239, 242, 245);
 
         RECT main_panel_rect = GetMainPanelRect();
-        RECT root_item_rect = GetRootItemRect();
+        RECT alignment_item_rect = GetAlignmentItemRect();
+        RECT peazip_item_rect = GetPeaZipAssocItemRect();
         FillRoundedRectPrimitive(canvas, main_panel_rect, panel_fill, GetPopupPanelCornerRadius(), panel_border, 88, 52);
 
-        if (_submenu_visible)
-            FillRoundedRectPrimitive(canvas, root_item_rect, item_hover_fill, GetPopupHighlightCornerRadius(), CLR_INVALID, 34);
+        if (_submenu_visible || _hot_item == TASKBAR_CONTEXT_MENU_ITEM_ALIGNMENT)
+            FillRoundedRectPrimitive(canvas, alignment_item_rect, item_hover_fill, GetPopupHighlightCornerRadius(), CLR_INVALID, 34);
+        if (_hot_item == TASKBAR_CONTEXT_MENU_ITEM_PEAZIP_ASSOC)
+            FillRoundedRectPrimitive(canvas, peazip_item_rect, item_hover_fill, GetPopupHighlightCornerRadius(), CLR_INVALID, 34);
 
         HFONT old_font = (HFONT)SelectObject(canvas, _font ? _font : g_Globals._hDefaultFont);
         int old_bk_mode = SetBkMode(canvas, TRANSPARENT);
         SetTextColor(canvas, item_text);
 
-        RECT text_rect = root_item_rect;
+        RECT text_rect = alignment_item_rect;
         text_rect.left += DPI_SX(12);
         text_rect.right -= DPI_SX(24);
         DrawText(canvas, TEXT("Taskbar alignment"), -1, &text_rect,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
 
-        RECT chevron_rect = root_item_rect;
+        RECT chevron_rect = alignment_item_rect;
         chevron_rect.left = chevron_rect.right - DPI_SX(18);
         DrawChevronRightPrimitive(canvas, chevron_rect, item_text);
+
+        RECT peazip_text_rect = peazip_item_rect;
+        peazip_text_rect.left += DPI_SX(12);
+        peazip_text_rect.right -= DPI_SX(48);
+        DrawText(canvas, TEXT("PeaZip for .zip/.rar"), -1, &peazip_text_rect,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+        RECT peazip_state_rect = peazip_item_rect;
+        peazip_state_rect.left = peazip_state_rect.right - DPI_SX(40);
+        peazip_state_rect.right -= DPI_SX(12);
+        DrawText(canvas, _peazip_default_archives ? TEXT("On") : TEXT("Off"), -1, &peazip_state_rect,
+            DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
         SetBkMode(canvas, old_bk_mode);
         SelectObject(canvas, old_font);
@@ -824,7 +891,7 @@ protected:
         InvalidateRect(_hwnd, NULL, FALSE);
     }
 
-    TaskbarAlignmentChoice ShowModal()
+    TaskbarContextMenuResult ShowModal()
     {
         ShowWindow(_hwnd, SW_SHOW);
         UpdateWindow(_hwnd);
@@ -840,7 +907,7 @@ protected:
 
             if (IsTaskbarAlignmentDismissMessage(msg.message) &&
                 !IsPopupOrSubmenuTarget(msg.hwnd, _hwnd, _submenu_hwnd)) {
-                CloseMenu(TASKBAR_ALIGNMENT_CHOICE_NONE);
+                CloseMenu(TASKBAR_CONTEXT_MENU_RESULT_NONE);
             }
 
             try {
@@ -860,7 +927,7 @@ protected:
         return _result;
     }
 
-    void CloseMenu(TaskbarAlignmentChoice result)
+    void CloseMenu(TaskbarContextMenuResult result)
     {
         _result = result;
         CloseSubmenu();
@@ -894,69 +961,89 @@ protected:
 
         case WM_MOUSEMOVE: {
             POINT pt = Point(lparam);
-            RECT root_item_rect = GetRootItemRect();
             if (!_tracking_mouse) {
                 TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, _hwnd, 0 };
                 TrackMouseEvent(&tme);
                 _tracking_mouse = true;
             }
-            if (PtInRect(&root_item_rect, pt))
+            TaskbarContextMenuItem hot_item = HitTestItem(pt);
+            if (_hot_item != hot_item) {
+                _hot_item = hot_item;
+                InvalidateRect(_hwnd, NULL, FALSE);
+            }
+
+            if (hot_item == TASKBAR_CONTEXT_MENU_ITEM_ALIGNMENT) {
                 OpenSubmenu();
+            } else {
+                CloseSubmenu();
+            }
             return 0;
         }
 
         case WM_MOUSELEAVE:
             _tracking_mouse = false;
+            _hot_item = TASKBAR_CONTEXT_MENU_ITEM_NONE;
+            InvalidateRect(_hwnd, NULL, FALSE);
             return 0;
 
         case WM_LBUTTONUP:
         case WM_RBUTTONUP: {
-            POINT pt = Point(lparam);
-            RECT root_item_rect = GetRootItemRect();
-            if (PtInRect(&root_item_rect, pt))
+            TaskbarContextMenuItem hot_item = HitTestItem(Point(lparam));
+            if (hot_item == TASKBAR_CONTEXT_MENU_ITEM_ALIGNMENT) {
                 OpenSubmenu();
-            else
-                CloseMenu(TASKBAR_ALIGNMENT_CHOICE_NONE);
+            } else if (hot_item == TASKBAR_CONTEXT_MENU_ITEM_PEAZIP_ASSOC) {
+                CloseMenu(TASKBAR_CONTEXT_MENU_RESULT_TOGGLE_PEAZIP_ASSOC);
+            } else {
+                CloseMenu(TASKBAR_CONTEXT_MENU_RESULT_NONE);
+            }
             return 0;
         }
 
         case WM_KILLFOCUS:
             if ((HWND)wparam != _owner && (HWND)wparam != _submenu_hwnd)
-                CloseMenu(TASKBAR_ALIGNMENT_CHOICE_NONE);
+                CloseMenu(TASKBAR_CONTEXT_MENU_RESULT_NONE);
             return 0;
 
         case WM_ACTIVATEAPP:
             if (!wparam)
-                CloseMenu(TASKBAR_ALIGNMENT_CHOICE_NONE);
+                CloseMenu(TASKBAR_CONTEXT_MENU_RESULT_NONE);
             return 0;
 
         case WM_CANCELMODE:
-            CloseMenu(TASKBAR_ALIGNMENT_CHOICE_NONE);
+            CloseMenu(TASKBAR_CONTEXT_MENU_RESULT_NONE);
             return 0;
 
         case WM_KEYDOWN:
             switch (wparam) {
             case VK_ESCAPE:
-                CloseMenu(TASKBAR_ALIGNMENT_CHOICE_NONE);
+                CloseMenu(TASKBAR_CONTEXT_MENU_RESULT_NONE);
                 return 0;
             case VK_RETURN:
-                if (!_submenu_visible) {
+                if (_hot_item == TASKBAR_CONTEXT_MENU_ITEM_PEAZIP_ASSOC) {
+                    CloseMenu(TASKBAR_CONTEXT_MENU_RESULT_TOGGLE_PEAZIP_ASSOC);
+                } else if (!_submenu_visible) {
                     OpenSubmenu();
                 } else {
-                    CloseMenu(_hot_choice);
+                    CloseMenu(ResultFromAlignmentChoice(_hot_choice));
                 }
                 return 0;
             case VK_RIGHT:
-                OpenSubmenu();
+                if (_hot_item == TASKBAR_CONTEXT_MENU_ITEM_ALIGNMENT)
+                    OpenSubmenu();
+                return 0;
+            case VK_LEFT:
+                CloseSubmenu();
                 return 0;
             case VK_DOWN:
             case VK_UP:
-                OpenSubmenu();
-                _hot_choice = (_hot_choice == TASKBAR_ALIGNMENT_CHOICE_CENTER)
-                    ? TASKBAR_ALIGNMENT_CHOICE_LEFT
-                    : TASKBAR_ALIGNMENT_CHOICE_CENTER;
-                if (_submenu_hwnd)
-                    PostMessage(_submenu_hwnd, PM_TASKBAR_ALIGNMENT_SET_HOT, _hot_choice, 0);
+                if (_hot_item == TASKBAR_CONTEXT_MENU_ITEM_PEAZIP_ASSOC) {
+                    _hot_item = TASKBAR_CONTEXT_MENU_ITEM_ALIGNMENT;
+                    OpenSubmenu();
+                } else {
+                    _hot_item = TASKBAR_CONTEXT_MENU_ITEM_PEAZIP_ASSOC;
+                    CloseSubmenu();
+                }
+                InvalidateRect(_hwnd, NULL, FALSE);
                 return 0;
             default:
                 break;
@@ -964,7 +1051,7 @@ protected:
             break;
 
         case PM_TASKBAR_ALIGNMENT_SELECT:
-            CloseMenu((TaskbarAlignmentChoice)wparam);
+            CloseMenu(ResultFromAlignmentChoice((TaskbarAlignmentChoice)wparam));
             return 0;
 
         case PM_TASKBAR_ALIGNMENT_CLOSE_SUBMENU:
@@ -989,9 +1076,11 @@ protected:
     HWND    _owner;
     HFONT   _font;
     bool    _centered;
+    bool    _peazip_default_archives;
     SIZE    _main_panel_size;
-    TaskbarAlignmentChoice _result;
+    TaskbarContextMenuResult _result;
     TaskbarAlignmentChoice _hot_choice;
+    TaskbarContextMenuItem _hot_item;
     bool    _tracking_mouse;
     bool    _submenu_visible;
     HWND    _submenu_hwnd;
@@ -2123,15 +2212,26 @@ LRESULT DesktopBar::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
         if (screen_pt.x == -1 && screen_pt.y == -1)
             GetCursorPos(&screen_pt);
 
-        TaskbarAlignmentChoice choice = TaskbarAlignmentMenuPopup::Show(
+        TaskbarContextMenuResult menu_result = TaskbarAlignmentMenuPopup::Show(
             _hwnd,
             g_Globals._hDefaultFont,
             screen_pt,
-            _centered_layout);
-        if (choice == TASKBAR_ALIGNMENT_CHOICE_CENTER)
+            _centered_layout,
+            IsPeaZipDefaultArchiveAssociation() != FALSE);
+
+        if (menu_result == TASKBAR_CONTEXT_MENU_RESULT_ALIGN_CENTER) {
             ApplyTaskbarAlignmentSetting(true);
-        else if (choice == TASKBAR_ALIGNMENT_CHOICE_LEFT)
+        } else if (menu_result == TASKBAR_CONTEXT_MENU_RESULT_ALIGN_LEFT) {
             ApplyTaskbarAlignmentSetting(false);
+        } else if (menu_result == TASKBAR_CONTEXT_MENU_RESULT_TOGGLE_PEAZIP_ASSOC) {
+            BOOL enable_assoc = IsPeaZipDefaultArchiveAssociation() ? FALSE : TRUE;
+            if (!SetPeaZipDefaultArchiveAssociation(enable_assoc)) {
+                MessageBox(_hwnd,
+                    TEXT("Unable to update PeaZip default app association for .zip/.rar."),
+                    TEXT("Explauncher"),
+                    MB_OK | MB_ICONWARNING);
+            }
+        }
         break;
     }
 
