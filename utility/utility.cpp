@@ -858,6 +858,7 @@ String get_windows_version_str()
 
 typedef void (WINAPI *RUNDLLPROC)(HWND hwnd, HINSTANCE hinst, LPCTSTR cmdline, DWORD nCmdShow);
 
+
 BOOL RunDLL(HWND hwnd, LPCTSTR dllname, LPCSTR procname, LPCTSTR cmdline, UINT nCmdShow)
 {
     HMODULE hmod = LoadLibrary(dllname);

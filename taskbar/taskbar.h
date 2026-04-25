@@ -124,6 +124,7 @@ protected:
     bool        _centered_layout;
     bool        _animate_highlights;
     bool        _animation_timer_running;
+    double      _last_animation_clock_ms;
     int         _preferred_btn_width;
     set<String> _pinned_app_keys;
     map<String, String> _pinned_aliases;

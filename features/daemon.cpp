@@ -2,6 +2,8 @@
 
 #include <Windows.h>
 #include <oleacc.h>
+#include <exdisp.h>
+#include <Shlwapi.h>
 #include "../utility/utility.h"
 #include "../utility/window.h"
 #include "../jconfig/jcfg.h"
@@ -31,8 +33,154 @@ extern void RemoveShowDesktopHookEntry();
 
 // Global variable.
 static HWINEVENTHOOK g_evthook = NULL;
+static HWINEVENTHOOK g_explorer_redirect_hook = NULL;
 static HWND g_daemon = NULL;
 static HWND g_clockarea = NULL;
+static HWND g_last_redirect_hwnd = NULL;
+static ULONGLONG g_last_redirect_tick = 0;
+
+#define WM_EXPLORER_REDIRECT_REQUEST (WM_USER + 121)
+
+static bool IsExplorerRedirectionEnabled()
+{
+    return JCFG2_DEF("JS_TASKBAR", "peazip_default_archive_assoc", false).ToBool() != FALSE;
+}
+
+static bool IsExplorerShellWindowClass(HWND hwnd)
+{
+    TCHAR class_name[64] = { 0 };
+    if (!GetClassName(hwnd, class_name, COUNTOF(class_name)))
+        return false;
+
+    return _tcsicmp(class_name, TEXT("CabinetWClass")) == 0 || _tcsicmp(class_name, TEXT("ExploreWClass")) == 0;
+}
+
+static bool IsExplorerProcessWindow(HWND hwnd)
+{
+    TCHAR module_path[MAX_PATH] = { 0 };
+    if (!GetWindowModuleFileName(hwnd, module_path, COUNTOF(module_path)))
+        return false;
+
+    LPCTSTR module_name = PathFindFileName(module_path);
+    return module_name && _tcsicmp(module_name, TEXT("explorer.exe")) == 0;
+}
+
+static bool TryGetExplorerWindowFolderPath(HWND hwnd, String &folder_path)
+{
+    folder_path.clear();
+
+    IShellWindows *shell_windows = NULL;
+    HRESULT hr = CoCreateInstance(CLSID_ShellWindows, NULL, CLSCTX_ALL, IID_PPV_ARGS(&shell_windows));
+    if (FAILED(hr) || !shell_windows)
+        return false;
+
+    long count = 0;
+    shell_windows->get_Count(&count);
+
+    for (long i = 0; i < count; ++i) {
+        VARIANT index;
+        VariantInit(&index);
+        index.vt = VT_I4;
+        index.lVal = i;
+
+        IDispatch *disp = NULL;
+        hr = shell_windows->Item(index, &disp);
+        VariantClear(&index);
+        if (FAILED(hr) || !disp)
+            continue;
+
+        IWebBrowserApp *browser = NULL;
+        hr = disp->QueryInterface(IID_PPV_ARGS(&browser));
+        disp->Release();
+        if (FAILED(hr) || !browser)
+            continue;
+
+        SHANDLE_PTR browser_hwnd = 0;
+        browser->get_HWND(&browser_hwnd);
+        if ((HWND)browser_hwnd != hwnd) {
+            browser->Release();
+            continue;
+        }
+
+        BSTR location_url = NULL;
+        hr = browser->get_LocationURL(&location_url);
+        browser->Release();
+        if (FAILED(hr) || !location_url)
+            break;
+
+        TCHAR path[MAX_PATH] = { 0 };
+        DWORD path_len = COUNTOF(path);
+        if (SUCCEEDED(PathCreateFromUrl(location_url, path, &path_len, 0)) && PathIsDirectory(path))
+            folder_path = path;
+
+        SysFreeString(location_url);
+        break;
+    }
+
+    shell_windows->Release();
+    return !folder_path.empty();
+}
+
+static void TryRedirectExplorerWindowToPeaZip(HWND hwnd)
+{
+    if (!IsExplorerRedirectionEnabled())
+        return;
+    if (!IsWindow(hwnd))
+        return;
+    if (!IsExplorerShellWindowClass(hwnd) || !IsExplorerProcessWindow(hwnd))
+        return;
+
+    ULONGLONG now = GetTickCount64();
+    if (g_last_redirect_hwnd == hwnd && (now - g_last_redirect_tick) < 1500)
+        return;
+
+    String folder_path;
+    if (!TryGetExplorerWindowFolderPath(hwnd, folder_path))
+        return;
+
+    if (launch_folder_with_peazip(g_Globals._hwndDesktop, folder_path.c_str(), SW_SHOWNORMAL)) {
+        g_last_redirect_hwnd = hwnd;
+        g_last_redirect_tick = now;
+        PostMessage(hwnd, WM_CLOSE, 0, 0);
+    }
+}
+
+void CALLBACK HandleExplorerRedirectEvent(HWINEVENTHOOK hook, DWORD event, HWND hwnd,
+                             LONG idObject, LONG idChild,
+                             DWORD dwEventThread, DWORD dwmsEventTime)
+{
+    UNREFERENCED_PARAMETER(hook);
+    UNREFERENCED_PARAMETER(event);
+    UNREFERENCED_PARAMETER(dwEventThread);
+    UNREFERENCED_PARAMETER(dwmsEventTime);
+
+    if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF)
+        return;
+    if (!g_daemon)
+        return;
+
+    PostMessage(g_daemon, WM_EXPLORER_REDIRECT_REQUEST, (WPARAM)hwnd, 0);
+}
+
+static void InstallExplorerRedirectHookEntry()
+{
+    if (g_explorer_redirect_hook) {
+        UnhookWinEvent(g_explorer_redirect_hook);
+        g_explorer_redirect_hook = NULL;
+    }
+
+    if (!IsExplorerRedirectionEnabled())
+        return;
+
+    g_explorer_redirect_hook = SetWinEventHook(
+        EVENT_OBJECT_SHOW,
+        EVENT_OBJECT_SHOW,
+        NULL,
+        HandleExplorerRedirectEvent,
+        0,
+        0,
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+}
 
 void InstallEventHook()
 {
@@ -152,6 +300,7 @@ WinXShell_DaemonWindow::WinXShell_DaemonWindow(HWND hwnd)
 WinXShell_DaemonWindow::~WinXShell_DaemonWindow()
 {
     if (g_evthook) UnhookWinEvent(g_evthook);
+    if (g_explorer_redirect_hook) UnhookWinEvent(g_explorer_redirect_hook);
     RemoveShowDesktopHookEntry();
 }
 
@@ -260,6 +409,9 @@ LRESULT WinXShell_DaemonWindow::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
             KillTimer(_hwnd, CAPSLOCK_RESET_TIMER);
             return S_OK;
         }
+    } else if (nmsg == WM_EXPLORER_REDIRECT_REQUEST) {
+        TryRedirectExplorerWindowToPeaZip((HWND)wparam);
+        return S_OK;
     } else if (nmsg == WM_DISPLAYCHANGE) {
         // Desktop::UpdateWallpaper
         SystemParametersInfo(SPI_SETDESKWALLPAPER, 0, NULL, SPIF_SENDWININICHANGE | SPIF_UPDATEINIFILE);
@@ -381,6 +533,7 @@ int daemon_entry(int standalone)
 
     InstallEventHookEntry();
     InstallKeyEventHookEntry();
+    InstallExplorerRedirectHookEntry();
     EnableShowDesktop(daemon, DISABLE_SHOWDESKTOP_TIMER);
     update_property_handler();
 

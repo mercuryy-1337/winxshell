@@ -37,6 +37,7 @@
 
 #include <Uxtheme.h>
 #include <dwmapi.h>
+#include <math.h>
 #pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "dwmapi.lib")
 
@@ -91,6 +92,21 @@ extern void TaskbarTransparency(HWND hwnd, const TCHAR *mode, UINT transparency,
 #endif
 
 static HBRUSH hbrTaskLine = NULL;
+
+static double GetTaskbarAnimationClockMilliseconds()
+{
+    static LARGE_INTEGER frequency = { 0 };
+    if (frequency.QuadPart == 0)
+        QueryPerformanceFrequency(&frequency);
+
+    LARGE_INTEGER now = { 0 };
+    QueryPerformanceCounter(&now);
+
+    if (frequency.QuadPart == 0)
+        return 0.0;
+
+    return (double)now.QuadPart * 1000.0 / (double)frequency.QuadPart;
+}
 
 static bool HasVisibleOrderKey(const vector<String> &order, const String &key)
 {
@@ -748,6 +764,7 @@ TaskBar::TaskBar(HWND hwnd)
     }
 
     InitTaskbarStyle();
+    _last_animation_clock_ms = 0.0;
 }
 
 TaskBar::~TaskBar()
@@ -2226,7 +2243,24 @@ bool TaskBar::AdvanceAnimations()
     bool needs_more = false;
     bool needs_refresh = false;
     bool animate_taskbar_icons = _animate_highlights && _centered_layout && UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title);
+    double now_ms = GetTaskbarAnimationClockMilliseconds();
+    double delta_ms = 16.0;
+    if (_last_animation_clock_ms > 0.0 && now_ms > _last_animation_clock_ms)
+        delta_ms = now_ms - _last_animation_clock_ms;
+    _last_animation_clock_ms = now_ms;
+
+    if (delta_ms < 1.0)
+        delta_ms = 1.0;
+    if (delta_ms > 80.0)
+        delta_ms = 80.0;
+
     float blend = taskbar_draw::GetAnimationBlend();
+    float frame_scale = (float)(delta_ms / 16.0);
+    float adjusted_blend = 1.0f - (float)pow(1.0f - blend, frame_scale);
+    if (adjusted_blend < 0.05f)
+        adjusted_blend = 0.05f;
+    if (adjusted_blend > 0.95f)
+        adjusted_blend = 0.95f;
     int hot_index = (int)SendMessage(_htoolbar, TB_GETHOTITEM, 0, 0);
 
     for (TaskBarMap::iterator it = _map.begin(); it != _map.end(); ++it) {
@@ -2237,8 +2271,8 @@ bool TaskBar::AdvanceAnimations()
         float target_hover = it->second._btn_idx == hot_index ? 1.0f : 0.0f;
         float target_active = ((state & TBSTATE_CHECKED) || (state & TBSTATE_PRESSED)) ? 1.0f : 0.0f;
 
-        it->second._hover_progress = taskbar_draw::EaseTowards(it->second._hover_progress, target_hover, blend);
-        it->second._active_progress = taskbar_draw::EaseTowards(it->second._active_progress, target_active, blend);
+        it->second._hover_progress = taskbar_draw::EaseTowards(it->second._hover_progress, target_hover, adjusted_blend);
+        it->second._active_progress = taskbar_draw::EaseTowards(it->second._active_progress, target_active, adjusted_blend);
 
         float hover_diff = it->second._hover_progress - target_hover;
         if (hover_diff < 0.0f)
@@ -2250,7 +2284,7 @@ bool TaskBar::AdvanceAnimations()
 
         if (animate_taskbar_icons && (it->second._icon_animating_in || it->second._icon_animating_out)) {
             float target_visibility = it->second._icon_animating_out ? 0.0f : 1.0f;
-            it->second._icon_visibility = taskbar_draw::EaseTowards(it->second._icon_visibility, target_visibility, blend);
+            it->second._icon_visibility = taskbar_draw::EaseTowards(it->second._icon_visibility, target_visibility, adjusted_blend);
 
             float visibility_diff = it->second._icon_visibility - target_visibility;
             if (visibility_diff < 0.0f)
@@ -2352,12 +2386,14 @@ void TaskBar::RefreshAnimationTimer(bool invalidate)
         if (!_animation_timer_running) {
             SetTimer(_hwnd, ID_TIMER_ANIMATEBUTTONS, 16, NULL);
             _animation_timer_running = true;
+            _last_animation_clock_ms = GetTaskbarAnimationClockMilliseconds();
         }
         if (invalidate)
             InvalidateAnimatedButtons(true);
     } else if (_animation_timer_running) {
         KillTimer(_hwnd, ID_TIMER_ANIMATEBUTTONS);
         _animation_timer_running = false;
+        _last_animation_clock_ms = 0.0;
     }
 }
 

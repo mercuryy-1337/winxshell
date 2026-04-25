@@ -348,6 +348,26 @@ static bool PersistTaskbarCentered(bool centered)
     return Save_JCfgFile(override_path, override_cfg);
 }
 
+static bool PersistTaskbarPeaZipArchiveAssociation(bool enabled)
+{
+    String override_path = GetPortableTaskbarAlignmentConfigPath();
+    if (override_path.empty())
+        return false;
+
+    Object override_cfg;
+    if (GetFileAttributes(override_path.c_str()) != INVALID_FILE_ATTRIBUTES)
+        override_cfg = Load_JsonCfg(override_path);
+
+    Object taskbar_cfg;
+    Object::ValueMap::iterator taskbar_it = override_cfg.find(TEXT("JS_TASKBAR"));
+    if (taskbar_it != override_cfg.end() && taskbar_it->second.GetType() == ObjectVal)
+        taskbar_cfg = taskbar_it->second.ToObject();
+
+    taskbar_cfg[TEXT("peazip_default_archive_assoc")] = Value(enabled);
+    override_cfg[TEXT("JS_TASKBAR")] = Value(taskbar_cfg);
+    return Save_JCfgFile(override_path, override_cfg);
+}
+
 struct TaskbarAlignmentSubmenuPopup : public Window {
     typedef Window super;
 
@@ -1096,7 +1116,7 @@ DesktopBar::DesktopBar(HWND hwnd)
     _alignment_slide_active(false),
     _alignment_slide_mode(LAYOUT_SLIDE_GENERIC),
     _alignment_slide_start_ms(0.0),
-    _alignment_slide_duration_ms(260.0),
+    _alignment_slide_duration_ms(170.0),
     _alignment_slide_cx(0),
     _alignment_slide_cy(0),
     _traySndVolIcon(hwnd, ID_TRAY_VOLUME),
@@ -1713,6 +1733,11 @@ LRESULT DesktopBar::Init(LPCREATESTRUCT pcs)
     _deskbar_pos_y = DESKTOPBAR_TOP;
     RefreshLayoutMetrics();
 
+    BOOL peazip_default_assoc = JCFG2_DEF("JS_TASKBAR", "peazip_default_archive_assoc", false).ToBool();
+    if (peazip_default_assoc) {
+        SetPeaZipDefaultArchiveAssociation(TRUE);
+    }
+
     int start_icon_size = GetStartButtonIconSize();
 
     string_t start_icon = JCFG2_DEF("JS_STARTMENU", "start_icon", TEXT("custom")).ToString();
@@ -2225,7 +2250,11 @@ LRESULT DesktopBar::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
             ApplyTaskbarAlignmentSetting(false);
         } else if (menu_result == TASKBAR_CONTEXT_MENU_RESULT_TOGGLE_PEAZIP_ASSOC) {
             BOOL enable_assoc = IsPeaZipDefaultArchiveAssociation() ? FALSE : TRUE;
-            if (!SetPeaZipDefaultArchiveAssociation(enable_assoc)) {
+            bool apply_ok = SetPeaZipDefaultArchiveAssociation(enable_assoc) != FALSE;
+            JCFG_TB_SET(2, "peazip_default_archive_assoc") = Value(enable_assoc != FALSE);
+            PersistTaskbarPeaZipArchiveAssociation(enable_assoc != FALSE);
+
+            if (!apply_ok) {
                 MessageBox(_hwnd,
                     TEXT("Unable to update PeaZip default app association for .zip/.rar."),
                     TEXT("Explauncher"),
