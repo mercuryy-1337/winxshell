@@ -45,6 +45,7 @@
 
 #define PM_GET_LAST_ACTIVE  (WM_APP+0x1D)
 #define PM_QUERY_GROUP_STATE (WM_APP+0x1E)
+#define PM_TASKBAR_COMMIT_PENDING_ADDS (WM_APP+0x1F)
 
 
 struct TaskbarGroupStateQuery {
@@ -126,6 +127,9 @@ protected:
     bool        _animation_timer_running;
     double      _last_animation_clock_ms;
     int         _preferred_btn_width;
+    int         _pending_reserved_button_count;
+    bool        _pending_add_commit;
+    bool        _committing_pending_adds;
     set<String> _pinned_app_keys;
     map<String, String> _pinned_aliases;
     vector<String> _visible_order;
@@ -157,4 +161,6 @@ protected:
     void    InvalidateAnimatedButtons(bool fallback_to_full = false);
     void    RefreshAnimationTimer(bool invalidate = true);
     void    SyncAnimationState(bool snap_to_target);
+    void    ClearPendingAddReservation();
+    bool    GetVisualButtonRect(const TaskBarEntry &entry, RECT *item_rect) const;
 };

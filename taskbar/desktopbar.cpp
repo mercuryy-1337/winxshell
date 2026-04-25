@@ -994,7 +994,7 @@ protected:
 
             if (hot_item == TASKBAR_CONTEXT_MENU_ITEM_ALIGNMENT) {
                 OpenSubmenu();
-            } else {
+            } else if (hot_item == TASKBAR_CONTEXT_MENU_ITEM_PEAZIP_ASSOC) {
                 CloseSubmenu();
             }
             return 0;
@@ -1116,7 +1116,7 @@ DesktopBar::DesktopBar(HWND hwnd)
     _alignment_slide_active(false),
     _alignment_slide_mode(LAYOUT_SLIDE_GENERIC),
     _alignment_slide_start_ms(0.0),
-    _alignment_slide_duration_ms(170.0),
+    _alignment_slide_duration_ms(210.0),
     _alignment_slide_cx(0),
     _alignment_slide_cy(0),
     _traySndVolIcon(hwnd, ID_TRAY_VOLUME),
@@ -1417,6 +1417,19 @@ static double EaseOutCubic(double progress)
 
     double inverse = 1.0 - progress;
     return 1.0 - inverse * inverse * inverse;
+}
+
+static double NormalizeAnimationSegment(double progress, double start, double end)
+{
+    if (end <= start)
+        return progress >= end ? 1.0 : 0.0;
+
+    if (progress <= start)
+        return 0.0;
+    if (progress >= end)
+        return 1.0;
+
+    return (progress - start) / (end - start);
 }
 
 static int LerpInt(int from, int to, double progress)
@@ -2413,10 +2426,13 @@ void DesktopBar::Resize(int cx, int cy)
         double duration = _alignment_slide_duration_ms > 0.0 ? _alignment_slide_duration_ms : 1.0;
         double progress = (double)elapsed / duration;
         if (progress >= 1.0) {
+            LayoutSlideMode completed_mode = _alignment_slide_mode;
             _alignment_slide_active = false;
             _alignment_slide_mode = LAYOUT_SLIDE_GENERIC;
             KillTimer(_hwnd, ID_TIMER_TASKBAR_ALIGNMENT_SLIDE);
             ApplyChildRects(_alignment_slide_to);
+            if (completed_mode == LAYOUT_SLIDE_TASKBAR_GROW && _hwndTaskBar)
+                PostMessage(_hwndTaskBar, PM_TASKBAR_COMMIT_PENDING_ADDS, 0, 0);
         } else {
             LayoutRects animated = _alignment_slide_to;
             double eased = EaseInOutCubic(progress);
@@ -2429,12 +2445,26 @@ void DesktopBar::Resize(int cx, int cy)
                 const RECT &from_taskbar = _alignment_slide_from._taskBar;
                 const RECT &to_taskbar = _alignment_slide_to._taskBar;
 
-                if (_alignment_slide_mode == LAYOUT_SLIDE_TASKBAR_GROW || _alignment_slide_mode == LAYOUT_SLIDE_TASKBAR_SHRINK) {
-                    int from_width = from_taskbar.right - from_taskbar.left;
+                if (_alignment_slide_mode == LAYOUT_SLIDE_TASKBAR_GROW ||
+                    _alignment_slide_mode == LAYOUT_SLIDE_TASKBAR_SHRINK) {
+                    double width_progress = eased;
+                    if (_alignment_slide_mode == LAYOUT_SLIDE_TASKBAR_GROW) {
+                        width_progress = EaseOutCubic(NormalizeAnimationSegment(progress, 0.58, 1.0));
+                    } else {
+                        width_progress = EaseOutCubic(NormalizeAnimationSegment(progress, 0.0, 0.38));
+                    }
+
                     animated._taskBar.left = LerpInt(from_taskbar.left, to_taskbar.left, eased);
                     animated._taskBar.top = LerpInt(from_taskbar.top, to_taskbar.top, eased);
                     animated._taskBar.bottom = LerpInt(from_taskbar.bottom, to_taskbar.bottom, eased);
-                    animated._taskBar.right = animated._taskBar.left + from_width;
+
+                    int from_width = from_taskbar.right - from_taskbar.left;
+                    int to_width = to_taskbar.right - to_taskbar.left;
+                    int animated_width = LerpInt(from_width, to_width, width_progress);
+                    if (animated_width < 0)
+                        animated_width = 0;
+
+                    animated._taskBar.right = animated._taskBar.left + animated_width;
                 } else {
                     animated._taskBar = LerpRect(from_taskbar, to_taskbar, eased);
                 }

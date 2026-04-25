@@ -161,6 +161,19 @@ static bool TryGetRemovalOnlyIndices(const vector<String> &previous_order, const
         return previous_index == previous_order.size() && !added_indices->empty();
     }
 
+static bool AreTrailingAddedIndices(const vector<String> &previous_order, const vector<int> &added_indices)
+{
+    if (added_indices.empty())
+        return false;
+
+    for (size_t index = 0; index < added_indices.size(); ++index) {
+        if (added_indices[index] != (int)(previous_order.size() + index))
+            return false;
+    }
+
+    return true;
+}
+
 static String ResolvePinnedAlias(const map<String, String> &aliases, const String &key)
 {
     if (key.empty())
@@ -748,6 +761,9 @@ TaskBar::TaskBar(HWND hwnd)
 {
     _himl = 0;
     _last_btn_width = 0;
+    _pending_reserved_button_count = 0;
+    _pending_add_commit = false;
+    _committing_pending_adds = false;
 
     _mmMetrics_org.cbSize = sizeof(MINIMIZEDMETRICS);
 
@@ -765,6 +781,51 @@ TaskBar::TaskBar(HWND hwnd)
 
     InitTaskbarStyle();
     _last_animation_clock_ms = 0.0;
+}
+
+void TaskBar::ClearPendingAddReservation()
+{
+    _pending_reserved_button_count = 0;
+    _pending_add_commit = false;
+    _committing_pending_adds = false;
+}
+
+bool TaskBar::GetVisualButtonRect(const TaskBarEntry &entry, RECT *item_rect) const
+{
+    if (!item_rect || !_htoolbar || !IsWindow(_htoolbar) || entry._btn_idx < 0)
+        return false;
+
+    if (entry._id) {
+        int button_index = (int)SendMessage(_htoolbar, TB_COMMANDTOINDEX, entry._id, 0);
+        if (button_index < 0)
+            return false;
+
+        return SendMessage(_htoolbar, TB_GETITEMRECT, button_index, (LPARAM)item_rect) != FALSE;
+    }
+
+    if (!_pending_add_commit || _committing_pending_adds || entry._icon_visibility <= 0.0f)
+        return false;
+
+    ClientRect toolbar_client(_htoolbar);
+    int slot_width = _last_btn_width > 0 ? _last_btn_width : _preferred_btn_width;
+    if (slot_width <= 0)
+        slot_width = taskbar_draw::GetModernButtonSlotWidth();
+
+    int origin_left = 0;
+    RECT first_rect = { 0 };
+    if (SendMessage(_htoolbar, TB_BUTTONCOUNT, 0, 0) > 0 &&
+        SendMessage(_htoolbar, TB_GETITEMRECT, 0, (LPARAM)&first_rect)) {
+        origin_left = first_rect.left;
+        int rect_width = first_rect.right - first_rect.left;
+        if (rect_width > 0)
+            slot_width = rect_width;
+    }
+
+    item_rect->left = origin_left + entry._btn_idx * slot_width;
+    item_rect->top = 0;
+    item_rect->right = item_rect->left + slot_width;
+    item_rect->bottom = toolbar_client.bottom;
+    return item_rect->right > item_rect->left && item_rect->bottom > item_rect->top;
 }
 
 TaskBar::~TaskBar()
@@ -1013,6 +1074,13 @@ LRESULT TaskBar::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
         return query->_window_count;
     }
 
+    case PM_TASKBAR_COMMIT_PENDING_ADDS:
+        if (_pending_add_commit) {
+            _committing_pending_adds = true;
+            Refresh();
+        }
+        return 0;
+
     case PM_GET_WIDTH:
         return GetPreferredWidth();
 
@@ -1117,7 +1185,7 @@ int TaskBar::Notify(int id, NMHDR *pnmh)
             switch (lptbcd->nmcd.dwDrawStage) {
             case CDDS_PREPAINT:
                 RefreshAnimationTimer(false);
-                return CDRF_NOTIFYITEMDRAW;
+                return CDRF_NOTIFYITEMDRAW | CDRF_NOTIFYPOSTPAINT;
             case CDDS_ITEMPREPAINT: {
                 lptbcd->clrText = TASKBAR_TEXTCOLOR();
                 if (_rounded_highlight) {
@@ -1207,6 +1275,26 @@ int TaskBar::Notify(int id, NMHDR *pnmh)
                 }
                 return CDRF_DODEFAULT;
             }
+            case CDDS_POSTPAINT:
+                if (_rounded_highlight && UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title) &&
+                    _pending_add_commit && !_committing_pending_adds) {
+                    for (TaskBarMap::const_iterator it = _map.begin(); it != _map.end(); ++it) {
+                        if (it->second._id || it->second._icon_visibility <= 0.0f)
+                            continue;
+
+                        RECT item_rect = { 0 };
+                        if (!GetVisualButtonRect(it->second, &item_rect))
+                            continue;
+
+                        float active_progress = (it->second._fsState & (TBSTATE_CHECKED | TBSTATE_PRESSED)) ?
+                            it->second._icon_visibility : 0.0f;
+                        DrawTaskbarButtonHighlight(lptbcd->nmcd.hdc, item_rect, 0.0f, active_progress);
+                        DrawDirectTaskbarEntryIcon(lptbcd->nmcd.hdc, item_rect, it->second);
+                        DrawTaskbarButtonIndicators(lptbcd->nmcd.hdc, item_rect,
+                            it->second._window_group_count, active_progress, it->second._icon_visibility);
+                    }
+                }
+                return CDRF_DODEFAULT;
             default:
                 return CDRF_DODEFAULT;
             }
@@ -1803,6 +1891,7 @@ void TaskBar::Refresh()
         if (entry._title.empty() && !entry._pin_title.empty())
             entry._title = entry._pin_title;
 
+        entry._btn_idx = (int)desired_visible_order.size();
         desired_visible_order.push_back(_visible_order[index]);
         if (!entry._id)
             rebuild_buttons = true;
@@ -1858,7 +1947,28 @@ void TaskBar::Refresh()
         }
     }
 
-    if (rebuild_buttons) {
+    bool trailing_add_only_rebuild = add_only_rebuild && AreTrailingAddedIndices(previous_order, added_button_indices);
+
+    bool pending_add_reservation_cleared = false;
+    if (_pending_add_commit && !_committing_pending_adds && !trailing_add_only_rebuild) {
+        ClearPendingAddReservation();
+        pending_add_reservation_cleared = true;
+    }
+
+    bool defer_add_only_commit = trailing_add_only_rebuild && !_committing_pending_adds;
+    bool pending_add_reservation_changed = false;
+    if (defer_add_only_commit) {
+        int reserved_button_count = (int)desired_visible_order.size();
+        pending_add_reservation_changed = !_pending_add_commit || _pending_reserved_button_count != reserved_button_count;
+        _pending_add_commit = true;
+        _pending_reserved_button_count = reserved_button_count;
+    }
+
+    bool request_parent_reflow = _centered_layout &&
+        (pending_add_reservation_cleared || pending_add_reservation_changed ||
+            (rebuild_buttons && !defer_add_only_commit && !_committing_pending_adds));
+
+    if (rebuild_buttons && !defer_add_only_commit) {
         DestoryThumbnailWindow();
         RECT partial_redraw_rect = { 0 };
         bool use_partial_redraw = false;
@@ -1868,7 +1978,7 @@ void TaskBar::Refresh()
         else if (remove_only_rebuild && !removed_button_indices.empty())
             first_changed_index = removed_button_indices[0];
 
-        defer_reflow_repaint = incremental_button_updates && (add_only_rebuild || remove_only_rebuild);
+        defer_reflow_repaint = false;
 
         if (first_changed_index >= 0) {
             ClientRect toolbar_client(_htoolbar);
@@ -2017,8 +2127,9 @@ void TaskBar::Refresh()
         }
     }
 
-    for (size_t index = 0; index < desired_visible_order.size(); ++index) {
-        TaskBarMap::iterator found = _map.find(desired_visible_order[index]);
+    const vector<String> &toolbar_state_order = defer_add_only_commit ? previous_order : desired_visible_order;
+    for (size_t index = 0; index < toolbar_state_order.size(); ++index) {
+        TaskBarMap::iterator found = _map.find(toolbar_state_order[index]);
         if (found == _map.end() || !found->second._id)
             continue;
 
@@ -2050,16 +2161,20 @@ void TaskBar::Refresh()
         }
     }
 
-    _visible_order.swap(desired_visible_order);
+    if (!defer_add_only_commit)
+        _visible_order.swap(desired_visible_order);
 
     ResizeButtons();
 
-    if (rebuild_buttons || !_animate_highlights)
+    if ((!defer_add_only_commit && rebuild_buttons) || !_animate_highlights)
         SyncAnimationState(true);
     RefreshAnimationTimer(!defer_reflow_repaint);
 
+    if (_committing_pending_adds)
+        ClearPendingAddReservation();
+
     // Trigger parent resize so centered layout recalculates with new button count
-    if (_centered_layout && rebuild_buttons) {
+    if (request_parent_reflow) {
         HWND parent = GetParent(_hwnd);
         if (parent) {
             RECT rc;
@@ -2142,10 +2257,13 @@ int TaskBar::GetPreferredWidth() const
             int max_right = 0;
             int min_left = 0;
             bool have_rect = false;
+            int actual_button_count = 0;
 
             for (TaskBarMap::const_iterator it = _map.begin(); it != _map.end(); ++it) {
                 if (!it->second._id || it->second._btn_idx < 0)
                     continue;
+
+                ++actual_button_count;
 
                 RECT item_rect = { 0 };
                 if (!SendMessage(_htoolbar, TB_GETITEMRECT, it->second._btn_idx, (LPARAM)&item_rect))
@@ -2159,8 +2277,25 @@ int TaskBar::GetPreferredWidth() const
                 have_rect = true;
             }
 
+            int current_width = 0;
             if (have_rect)
-                return max_right + max(DPI_SX(2), min_left);
+                current_width = max_right + max(DPI_SX(2), min_left);
+
+            if (_pending_add_commit && !_committing_pending_adds && _pending_reserved_button_count > actual_button_count) {
+                int logical_btn_width = _preferred_btn_width;
+                if (_last_btn_width > 0 && _last_btn_width < logical_btn_width)
+                    logical_btn_width = _last_btn_width;
+                if (logical_btn_width <= 0)
+                    logical_btn_width = taskbar_draw::GetModernButtonSlotWidth();
+
+                if (current_width > 0)
+                    return current_width + (_pending_reserved_button_count - actual_button_count) * logical_btn_width;
+
+                return _pending_reserved_button_count * logical_btn_width;
+            }
+
+            if (current_width > 0)
+                return current_width;
         } else {
             SIZE max_size = { 0 };
             if (SendMessage(_htoolbar, TB_GETMAXSIZE, 0, (LPARAM)&max_size) && max_size.cx > 0)
@@ -2203,11 +2338,13 @@ bool TaskBar::IsAnimationRequired() const
 
     int hot_index = (int)SendMessage(_htoolbar, TB_GETHOTITEM, 0, 0);
     for (TaskBarMap::const_iterator it = _map.begin(); it != _map.end(); ++it) {
-        if (!it->second._id)
+        bool pending_virtual_add = !it->second._id && _pending_add_commit && !_committing_pending_adds &&
+            it->second._icon_visibility < 1.0f;
+        if (!it->second._id && !pending_virtual_add)
             continue;
 
-        LONG state = (LONG)SendMessage(_htoolbar, TB_GETSTATE, it->second._id, 0);
-        float target_hover = it->second._btn_idx == hot_index ? 1.0f : 0.0f;
+        LONG state = it->second._id ? (LONG)SendMessage(_htoolbar, TB_GETSTATE, it->second._id, 0) : 0;
+        float target_hover = it->second._id && it->second._btn_idx == hot_index ? 1.0f : 0.0f;
         float target_active = ((state & TBSTATE_CHECKED) || (state & TBSTATE_PRESSED)) ? 1.0f : 0.0f;
 
         float hover_diff = it->second._hover_progress - target_hover;
@@ -2259,20 +2396,32 @@ bool TaskBar::AdvanceAnimations()
     float adjusted_blend = 1.0f - (float)pow(1.0f - blend, frame_scale);
     if (adjusted_blend < 0.05f)
         adjusted_blend = 0.05f;
-    if (adjusted_blend > 0.95f)
-        adjusted_blend = 0.95f;
+    if (adjusted_blend > 0.68f)
+        adjusted_blend = 0.68f;
+
+    // Keep icon visibility transitions gentler than hover/active to avoid pop/flash during group reflow.
+    float icon_blend = adjusted_blend;
+    if (icon_blend > 0.38f)
+        icon_blend = 0.38f;
     int hot_index = (int)SendMessage(_htoolbar, TB_GETHOTITEM, 0, 0);
 
     for (TaskBarMap::iterator it = _map.begin(); it != _map.end(); ++it) {
-        if (!it->second._id)
+        bool pending_virtual_add = !it->second._id && _pending_add_commit && !_committing_pending_adds &&
+            it->second._icon_animating_in;
+        if (!it->second._id && !pending_virtual_add)
             continue;
 
-        LONG state = (LONG)SendMessage(_htoolbar, TB_GETSTATE, it->second._id, 0);
-        float target_hover = it->second._btn_idx == hot_index ? 1.0f : 0.0f;
+        LONG state = it->second._id ? (LONG)SendMessage(_htoolbar, TB_GETSTATE, it->second._id, 0) : 0;
+        float target_hover = it->second._id && it->second._btn_idx == hot_index ? 1.0f : 0.0f;
         float target_active = ((state & TBSTATE_CHECKED) || (state & TBSTATE_PRESSED)) ? 1.0f : 0.0f;
 
-        it->second._hover_progress = taskbar_draw::EaseTowards(it->second._hover_progress, target_hover, adjusted_blend);
-        it->second._active_progress = taskbar_draw::EaseTowards(it->second._active_progress, target_active, adjusted_blend);
+        if (it->second._id) {
+            it->second._hover_progress = taskbar_draw::EaseTowards(it->second._hover_progress, target_hover, adjusted_blend);
+            it->second._active_progress = taskbar_draw::EaseTowards(it->second._active_progress, target_active, adjusted_blend);
+        } else {
+            it->second._hover_progress = 0.0f;
+            it->second._active_progress = target_active;
+        }
 
         float hover_diff = it->second._hover_progress - target_hover;
         if (hover_diff < 0.0f)
@@ -2284,7 +2433,7 @@ bool TaskBar::AdvanceAnimations()
 
         if (animate_taskbar_icons && (it->second._icon_animating_in || it->second._icon_animating_out)) {
             float target_visibility = it->second._icon_animating_out ? 0.0f : 1.0f;
-            it->second._icon_visibility = taskbar_draw::EaseTowards(it->second._icon_visibility, target_visibility, adjusted_blend);
+            it->second._icon_visibility = taskbar_draw::EaseTowards(it->second._icon_visibility, target_visibility, icon_blend);
 
             float visibility_diff = it->second._icon_visibility - target_visibility;
             if (visibility_diff < 0.0f)
@@ -2323,16 +2472,17 @@ void TaskBar::InvalidateAnimatedButtons(bool fallback_to_full)
 
     RECT dirty_rect = { 0 };
     bool has_dirty_rect = false;
-    ClientRect toolbar_client(_htoolbar);
     int hot_index = (int)SendMessage(_htoolbar, TB_GETHOTITEM, 0, 0);
     bool animate_taskbar_icons = _animate_highlights && _centered_layout && UseDirectTaskbarIconDraw(_rounded_highlight, _no_task_title);
 
     for (TaskBarMap::const_iterator it = _map.begin(); it != _map.end(); ++it) {
-        if (!it->second._id)
+        bool pending_virtual_add = !it->second._id && _pending_add_commit && !_committing_pending_adds &&
+            it->second._icon_visibility < 1.0f;
+        if (!it->second._id && !pending_virtual_add)
             continue;
 
-        LONG state = (LONG)SendMessage(_htoolbar, TB_GETSTATE, it->second._id, 0);
-        float target_hover = it->second._btn_idx == hot_index ? 1.0f : 0.0f;
+        LONG state = it->second._id ? (LONG)SendMessage(_htoolbar, TB_GETSTATE, it->second._id, 0) : 0;
+        float target_hover = it->second._id && it->second._btn_idx == hot_index ? 1.0f : 0.0f;
         float target_active = ((state & TBSTATE_CHECKED) || (state & TBSTATE_PRESSED)) ? 1.0f : 0.0f;
 
         float hover_diff = it->second._hover_progress - target_hover;
@@ -2350,17 +2500,9 @@ void TaskBar::InvalidateAnimatedButtons(bool fallback_to_full)
         if (!redraw_entry)
             continue;
 
-        int button_index = (int)SendMessage(_htoolbar, TB_COMMANDTOINDEX, it->second._id, 0);
-        if (button_index < 0)
-            continue;
-
         RECT item_rect = { 0 };
-        if (!SendMessage(_htoolbar, TB_GETITEMRECT, button_index, (LPARAM)&item_rect))
+        if (!GetVisualButtonRect(it->second, &item_rect))
             continue;
-
-        if (animate_taskbar_icons && it->second._icon_animating_in) {
-            item_rect.right = toolbar_client.right;
-        }
 
         if (!has_dirty_rect) {
             dirty_rect = item_rect;
@@ -2406,9 +2548,10 @@ void TaskBar::SyncAnimationState(bool snap_to_target)
 
     int hot_index = (int)SendMessage(_htoolbar, TB_GETHOTITEM, 0, 0);
     for (TaskBarMap::iterator it = _map.begin(); it != _map.end(); ++it) {
-        LONG state = (LONG)SendMessage(_htoolbar, TB_GETSTATE, it->second._id, 0);
-        float target_hover = it->second._btn_idx == hot_index ? 1.0f : 0.0f;
-        float target_active = ((state & TBSTATE_CHECKED) || (state & TBSTATE_PRESSED)) ? 1.0f : 0.0f;
+        LONG state = it->second._id ? (LONG)SendMessage(_htoolbar, TB_GETSTATE, it->second._id, 0) : 0;
+        float target_hover = it->second._id && it->second._btn_idx == hot_index ? 1.0f : 0.0f;
+        float target_active = it->second._id ?
+            (((state & TBSTATE_CHECKED) || (state & TBSTATE_PRESSED)) ? 1.0f : 0.0f) : 0.0f;
         if (snap_to_target || !_animate_highlights) {
             it->second._hover_progress = target_hover;
             it->second._active_progress = target_active;
