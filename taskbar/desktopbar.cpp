@@ -48,6 +48,9 @@
 
 #include "../dialogs/settings.h"
 #include "../customization/startbutton.h"
+#ifdef USE_WINUI3
+#include "../StartMenuUI/WinUIStartMenu.h"
+#endif
 
 #ifndef TBCDRF_NOEDGES
 #define TBCDRF_NOEDGES       0x00010000
@@ -2610,6 +2613,24 @@ void DesktopBar::ShowOrHideStartMenu(const char *startAction)
             return;
         }
     }
+
+#ifdef USE_WINUI3
+    // Prefer the WinUI 3 start menu when the runtime bootstrap succeeded.
+    // Falls through to the legacy StartMenuRoot path otherwise.
+    if (g_Globals._winui3_available) {
+        if (!Button_GetState(_hwndStartButton))
+            Button_SetState(_hwndStartButton, TRUE);
+
+        if (WinUIStartMenu_IsVisible()) {
+            WinUIStartMenu_Hide();
+        } else {
+            WinUIStartMenu_Show(_hwndStartButton, _hwnd);
+        }
+
+        Button_SetState(_hwndStartButton, FALSE);
+        return;
+    }
+#endif
 
     if (_startMenuRoot) {
         // set the Button, if not set

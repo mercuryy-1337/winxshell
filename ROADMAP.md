@@ -66,25 +66,40 @@ Set up the build system so the existing Win32 exe can load the Windows App SDK r
 Replace the hand-coded GDI+ start menu with a full WinUI 3 window. This is the highest-impact change — the current start menu is the most unfinished component and benefits the most from XAML layout and composition animations.
 
 ### 1.1 Start Menu Window Shell
-- [ ] Create `StartMenuUI/StartMenuWindow.xaml` — the WinUI 3 `Window` subclass
-- [ ] Create `StartMenuUI/StartMenuWindow.xaml.cpp` — window code-behind
-- [ ] Implement unpackaged `DesktopWindow` creation from the existing Win32 `DesktopBar`
-- [ ] Implement borderless, transparent window (no title bar, no chrome)
-- [ ] Match the current rounded-corner window region with XAML `CornerRadius`
-- [ ] Position the window above the taskbar, aligned to the start button
-- [ ] Handle multi-monitor placement
-- [ ] Implement click-away dismiss (coordinate with existing `WM_ACTIVATEAPP` logic)
-- [ ] Wire up the start button toggle (open/close) to the new window
+- [x] ~~Create `StartMenuUI/StartMenuWindow.xaml`~~ — built programmatically in C++/WinRT instead (no XAML compiler in this project)
+- [x] ~~Create `StartMenuUI/StartMenuWindow.xaml.cpp`~~ — replaced by [StartMenuUI/WinUIStartMenu.cpp](StartMenuUI/WinUIStartMenu.cpp)
+- [x] Implement unpackaged `DesktopWindow` creation from the existing Win32 `DesktopBar`
+- [x] Implement borderless, transparent window (no title bar, no chrome)
+- [x] Match the current rounded-corner window region with XAML `CornerRadius` *(done via tile-level CornerRadius; outer window rounding will get DwmSetWindowAttribute pass in 1.6)*
+- [x] Position the window above the taskbar, aligned to the start button
+- [x] Handle multi-monitor placement
+- [x] Implement click-away dismiss (via `Window.Activated` Deactivated event)
+- [x] Wire up the start button toggle (open/close) to the new window *(in [DesktopBar::ShowOrHideStartMenu](taskbar/desktopbar.cpp:2603))*
 
 ### 1.2 Start Menu Layout
-- [ ] Create `StartMenuUI/StartMenuPage.xaml` — main content page
-- [ ] Search bar at top using `AutoSuggestBox`
-- [ ] "Pinned" section header with "All apps >" button
-- [ ] Pinned apps grid using `GridView` with `ItemsWrapGrid` (6 columns)
-- [ ] "Recommended" section header with "More >" button
-- [ ] Recommended items list using `ListView`
-- [ ] Footer bar with user profile button and power menu button
-- [ ] Scrollable regions with proper `ScrollViewer` integration
+- [x] ~~Create `StartMenuUI/StartMenuPage.xaml`~~ — programmatic tree built by `BuildRoot()` in [WinUIStartMenu.cpp](StartMenuUI/WinUIStartMenu.cpp)
+- [x] Search bar at top using `AutoSuggestBox`
+- [x] "Pinned" section header with "All apps >" button
+- [x] Pinned apps grid using `ItemsRepeater` + `UniformGridLayout` (6 columns × 3 rows of placeholder tiles)
+- [x] "Recommended" section header with "More >" button
+- [x] Recommended items list using `ListView`
+- [x] Footer bar with user profile button (real Windows username) and power menu button
+- [x] Scrollable regions with proper `ScrollViewer` integration
+
+**Phase 1.1 + 1.2 implementation notes:**
+- `WinUIHost` ([winui/WinUIHost.cpp](winui/WinUIHost.cpp)) owns the `DispatcherQueueController` + `Application` singleton on the main UI thread. We don't call `Application::Start` (it would hijack the message loop) — instead we construct `App` via `winrt::make<>` which is enough to register `Application::Current`.
+- All WinUI 3 surfaces are gated on `g_Globals._winui3_available`; when bootstrap fails the legacy `StartMenuRoot` keeps working unchanged.
+- The window is borderless `WS_POPUP | WS_EX_TOOLWINDOW`, anchored above the taskbar with monitor-aware placement (handles bottom, top, left, and right taskbars).
+- Mica is applied when supported, falling back to DesktopAcrylic on Windows 10. Both go through `MicaController` / `DesktopAcrylicController` with a default `SystemBackdropConfiguration`.
+- BrowseInformation was disabled in Debug configs (`BSCMAKE BK1520` overflow) — the legacy `.bsc` browse database can't fit cppwinrt's header surface. IntelliSense uses its own DB, so nothing user-visible is lost.
+
+**Still to do for Phase 1 polish (deferred to 1.3+):**
+- Real pinned-app data (currently 18 placeholder tiles)
+- Real recommended documents (currently 4 placeholder rows)
+- Click handlers for tiles, rows, profile button, power button
+- Outer window corner rounding via `DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND)`
+- Theme-driven coloring (currently hardcoded white-on-translucent)
+- Icon extraction pipeline (currently uses Segoe Fluent Icon glyphs as placeholders)
 
 ### 1.3 Start Menu Data & Interaction
 - [ ] Create `StartMenuUI/StartMenuViewModel.h` — data model for the menu

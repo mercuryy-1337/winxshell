@@ -394,6 +394,8 @@ struct GdiplusSession {
 
 #ifdef USE_WINUI3
 #include <appmodel.h>  // PACKAGE_VERSION
+#include "winui/WinUIHost.h"
+#include "StartMenuUI/WinUIStartMenu.h"
 
 // Mirror of g_Globals._winui3_available exposed without dragging globals.h
 // through the precompiled-header chain in winui/. winui/WinUIHost.cpp reads
@@ -450,6 +452,12 @@ struct WinAppSdkSession {
 
     ~WinAppSdkSession()
     {
+        // Tear down WinUI 3 surfaces before closing the bootstrapper.
+        // Order matters: WinUIStartMenu uses WinUIHost, which uses the
+        // dispatcher/Application that the bootstrap DLL provides.
+        WinUIStartMenu_Shutdown();
+        winui::WinUIHost::Shutdown();
+
         if (_initialized && _module) {
             PFN_MddBootstrapShutdown pShutdown =
                 (PFN_MddBootstrapShutdown)GetProcAddress(_module, "MddBootstrapShutdown");
