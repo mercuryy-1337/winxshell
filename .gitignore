@@ -32,3 +32,9 @@ UI_Debug.bat
 /test
 /release
 /frames
+
+# NuGet (Phase 0 WinUI 3 migration)
+packages/
+obj/
+.tools/
+Generated Files/

@@ -1175,7 +1175,7 @@ void NotifyArea::Refresh(bool update)
 
         if (!IsWindow(entry._hWnd))
             if (_icon_map.erase(entry)) // delete icons without valid owner window
-                ++update;
+                update = true;
     }
 
     DWORD now = GetTickCount();
@@ -1190,14 +1190,14 @@ void NotifyArea::Refresh(bool update)
         case NIM_HIDE:
             if (!(entry._dwState & NIS_HIDDEN)) {
                 entry._dwState |= NIS_HIDDEN;
-                ++update;
+                update = true;
             }
             break;
 
         case NIM_SHOW:
             if (entry._dwState & NIS_HIDDEN) {
                 entry._dwState &= ~NIS_HIDDEN;
-                ++update;
+                update = true;
             }
             break;
 
@@ -1207,7 +1207,7 @@ void NotifyArea::Refresh(bool update)
                 if (!(entry._dwState & NIS_HIDDEN))
                     if (now - entry._lastChange > ICON_AUTOHIDE_SECONDS * 1000) {
                         entry._dwState |= NIS_HIDDEN;
-                        ++update;
+                        update = true;
                     }
             break;
         }
@@ -1668,7 +1668,7 @@ void TrayNotifyDlg::SetIconMode(NOTIFYICONMODE mode)
 
             if (cfg_entry.match(entry)) {
                 cfg_entry._mode = mode;
-                ++found;
+                found = true;
                 break;
             }
         }

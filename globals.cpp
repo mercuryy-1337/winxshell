@@ -38,6 +38,7 @@ ExplorerGlobals::ExplorerGlobals()
     _isDebug = FALSE;
     _isShell = FALSE;
     _isWinPE = FALSE;
+    _winui3_available = false;
 
     _uifolder = _T("");
     _lua = NULL;

@@ -13,19 +13,19 @@ Migration of Explauncher from Win32/GDI+ to Windows App SDK (WinUI 3).
 Set up the build system so the existing Win32 exe can load the Windows App SDK runtime and create WinUI 3 content, without breaking anything that works today.
 
 ### 0.1 NuGet & Project Configuration
-- [ ] Add `Microsoft.WindowsAppSDK` NuGet package to `Explauncher.vcxproj`
-- [ ] Add `Microsoft.Windows.CppWinRT` NuGet package for C++/WinRT projections
-- [ ] Configure unpackaged deployment (`<WindowsPackageType>None</WindowsPackageType>`)
-- [ ] Set C++ language standard to `/std:c++17` (required by C++/WinRT)
-- [ ] Verify `/MT` (static CRT) still works with Windows App SDK libs
-- [ ] Verify all three platforms still build: Win32, x64, ARM
+- [x] Add `Microsoft.WindowsAppSDK` NuGet package to `Explauncher.vcxproj`
+- [x] Add `Microsoft.Windows.CppWinRT` NuGet package for C++/WinRT projections
+- [x] Configure unpackaged deployment (`<WindowsPackageType>None</WindowsPackageType>`)
+- [x] Set C++ language standard to `/std:c++17` (required by C++/WinRT)
+- [x] Verify `/MT` (static CRT) still works with Windows App SDK libs
+- [x] Verify all three platforms still build: Win32, x64, ARM *(Win32 + x64 verified; ARM needs an ARM toolchain to validate)*
 
 ### 0.2 Bootstrap Initialization
-- [ ] Add Windows App SDK bootstrapper call (`MddBootstrapInitialize`) early in `WinMain` (in `explorer.cpp`)
-- [ ] Add `MddBootstrapShutdown` at process exit
-- [ ] Add auto-install/download logic for the Windows App SDK runtime if not present
-- [ ] Handle the bootstrapper failure case gracefully (fall back to pure Win32 mode)
-- [ ] Update `Explauncher.exe.manifest` with `maxversiontested` for Windows 10/11
+- [x] Add Windows App SDK bootstrapper call (`MddBootstrapInitialize`) early in `WinMain` (in `explorer.cpp`)
+- [x] Add `MddBootstrapShutdown` at process exit
+- [ ] Add auto-install/download logic for the Windows App SDK runtime if not present *(deferred — current behavior is to ship the bootstrap DLL alongside the exe; runtime auto-download lands in 0.3)*
+- [x] Handle the bootstrapper failure case gracefully (fall back to pure Win32 mode)
+- [x] Update `Explauncher.exe.manifest` with `maxversiontested` for Windows 10/11
 
 ### 0.3 Single-EXE Deployment Validation
 - [ ] Confirm the exe runs on a clean machine with only the WinAppSDK runtime installed
@@ -33,15 +33,31 @@ Set up the build system so the existing Win32 exe can load the Windows App SDK r
 - [ ] Test that all existing features (taskbar, tray, shell hooks, Lua engine) still work identically
 - [ ] Test shell replacement mode (`-shell`) still works
 - [ ] Test daemon mode (`-daemon`) still works
-- [ ] Verify no MSIX packaging is required — pure unpackaged exe
+- [x] Verify no MSIX packaging is required — pure unpackaged exe *(`WindowsPackageType=None`, `EnableCoreMrtTooling=false`, `AppxPackage=false`)*
 
 ### 0.4 Abstraction Layer
-- [ ] Create `winui/WinUIHost.h` — singleton that manages the `DispatcherQueueController` and `Application` object
-- [ ] Create `winui/WinUIWindow.h` — base class for hosting a WinUI 3 `DesktopWindow` from Win32 code
-- [ ] Create `winui/ThemeBridge.h` — bridges JCFG theme values to WinUI resource dictionaries
-- [ ] Add build-time `#define USE_WINUI3` flag so WinUI 3 features can be toggled off for fallback builds
+- [x] Create `winui/WinUIHost.h` — singleton that manages the `DispatcherQueueController` and `Application` object
+- [x] Create `winui/WinUIWindow.h` — base class for hosting a WinUI 3 `DesktopWindow` from Win32 code
+- [x] Create `winui/ThemeBridge.h` — bridges JCFG theme values to WinUI resource dictionaries
+- [x] Add build-time `#define USE_WINUI3` flag so WinUI 3 features can be toggled off for fallback builds
 
 **Exit criteria:** Project builds and runs identically to before. WinUI 3 headers are available. No visible changes to the user.
+
+**Phase 0 implementation notes:**
+- `packages.config` pins `Microsoft.WindowsAppSDK 1.6.241114003`, `Microsoft.Windows.CppWinRT 2.0.240405.15`, plus the transitive deps `Microsoft.Web.WebView2 1.0.2651.64` and `Microsoft.Windows.SDK.BuildTools 10.0.22621.756`. Restore from the project root: `nuget restore packages.config -PackagesDirectory packages`.
+- `Microsoft.WindowsAppRuntime.Bootstrap.dll` is delay-loaded **and** loaded dynamically via `LoadLibrary` from the WinMain RAII guard `WinAppSdkSession`. If the DLL is missing or `MddBootstrapInitialize2` fails, `g_Globals._winui3_available` stays `false` and the shell continues in pure Win32 mode.
+- The exe sets `_HAS_STD_BYTE=0` to avoid the `std::byte` vs GDI+ `byte` clash that `/std:c++17` exposes.
+- Two pre-existing C++17 incompatibilities were patched as part of the toolchain bump: `bool++` increments in `taskbar/traynotify.cpp` (now `= true`) and `std::ptr_fun`/`std::not1` in `vendor/json.cpp` (now lambdas).
+- Phase 0 items in section 0.3 marked as TODO require runtime testing on a clean install — see `Phase 0 — Validation Steps` below.
+
+**Phase 0 — Validation steps (manual smoke-test):**
+1. Copy `x64/Release/Explauncher.exe` and `x64/Release/Microsoft.WindowsAppRuntime.Bootstrap.dll` plus the existing `Theme/`, `Explorer/`, `Wallpapers/` folders to a target machine.
+2. Install the Windows App SDK 1.6 runtime from <https://aka.ms/windowsappsdk/1.6/latest/windowsappruntimeinstall-x64.exe>.
+3. Launch `Explauncher.exe -console` and check the log: should see `WinAppSDK bootstrap initialized`. If you see `WinAppSDK bootstrap DLL not found` or `MddBootstrapInitialize2 failed`, the runtime install didn't take.
+4. Launch `Explauncher.exe -shell` to confirm shell replacement still works.
+5. Launch `Explauncher.exe -daemon` to confirm daemon mode still works.
+6. Smoke test the taskbar (window switching, tray icons, clock) and the existing start menu — Phase 0 should not regress any of these.
+7. Delete `Microsoft.WindowsAppRuntime.Bootstrap.dll` from the install folder and relaunch — Explauncher should still start in compatibility mode (log will show `WinAppSDK bootstrap DLL not found`).
 
 ---
 

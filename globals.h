@@ -92,6 +92,7 @@ extern struct ExplorerGlobals {
     BOOL        _isShell;
     BOOL        _isWinPE;
     BOOL        _isNT5;
+    bool        _winui3_available;  // true once MddBootstrapInitialize succeeded
     String      _langID;
     String      _locale;
 
