@@ -70,8 +70,8 @@
       "taskbar": {
         "bkcolor": [38, 38, 38],
         "#bkmode_values": "opaque; transparent; acrylic",
-        "bkmode": "transparent",
-        "transparency": 64,
+        "bkmode": "acrylic",
+        "transparency": 70,
         "task_line_color": [238, 238, 238],
         "textcolor": "0xffffff"
       }
