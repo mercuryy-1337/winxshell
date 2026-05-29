@@ -40,6 +40,16 @@ extern void JCfg_RefreshThemeCache();
 extern int JCfg_GetDesktopBarHeight();
 extern bool JCfg_TaskThumbnailEnabled();
 
+// TRUE if the active theme uses an acrylic/transparent backdrop. Callers
+// should leave the window background un-erased (NULL brush) and skip any
+// FillRect on the parent canvas so DWM's acrylic blur can show through.
+extern BOOL JCfg_TaskbarIsTranslucent();
+
+// Background brush to use for taskbar windows. Returns the stock NULL brush
+// when the active theme is translucent so the class-level ERASEBKGND doesn't
+// fill the window opaque (which defeats the acrylic compositor).
+extern HBRUSH JCfg_TaskbarClassBrush();
+
 #define FILE_JCFG1(fileobj, key1) JCfg_GetValue(&fileobj, TEXT(key1), Value())
 #define FILE_JCFG1_DEF(fileobj, key1, defval) JCfg_GetValue(&fileobj, TEXT(key1), Value(defval))
 #define FILE_JCFG2_DEF(fileobj, key1, key2, defval) JCfg_GetValue(&fileobj, TEXT(key1), key2, Value(defval))

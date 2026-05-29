@@ -190,12 +190,29 @@ string_t JCfg_ResolveActiveTheme(string_t key1)
     return name;
 }
 
+BOOL JCfg_TaskbarIsTranslucent()
+{
+    string_t mode = TASKBAR_GETBKMODE().ToString();
+    return (mode == TEXT("acrylic") || mode == TEXT("transparent")) ? TRUE : FALSE;
+}
+
+HBRUSH JCfg_TaskbarClassBrush()
+{
+    // Translucent themes: NULL_BRUSH so Windows never auto-erases the bg
+    // opaque; DWM's acrylic backdrop becomes visible. Opaque themes keep the
+    // legacy solid brush so nothing else has to change.
+    if (JCfg_TaskbarIsTranslucent()) {
+        return (HBRUSH)GetStockObject(NULL_BRUSH);
+    }
+    return g_JCfg_taskbar_bkbrush;
+}
+
 void JCfg_RefreshThemeCache()
 {
-    if (g_JCfg_taskbar_bkbrush) {
-        DeleteObject(g_JCfg_taskbar_bkbrush);
-        g_JCfg_taskbar_bkbrush = NULL;
-    }
+    // NOTE: intentionally leak the prior brush. Window classes captured the
+    // pointer at registration time; deleting it here would dangle their
+    // hbrBackground. A few-bytes-per-theme-switch leak is acceptable; theme
+    // toggles are rare.
     g_JCfg_taskbar_bkbrush = CreateSolidBrush(TASKBAR_BKCOLOR());
     g_JCfg_taskbar_textcolor = TASKBAR_GETTEXTCOLOR();
     g_JCfg_taskbar_themestyle = TASKBAR_GETTHEMESTYLE();

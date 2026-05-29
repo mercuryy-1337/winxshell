@@ -68,10 +68,11 @@
     },
     "dark": {
       "taskbar": {
-        "bkcolor": [38, 38, 38],
+        "bkcolor": [32, 32, 32],
         "#bkmode_values": "opaque; transparent; acrylic",
         "bkmode": "acrylic",
-        "transparency": 70,
+        "transparency": 30,
+        "transparency_color": [32, 32, 32],
         "task_line_color": [238, 238, 238],
         "textcolor": "0xffffff"
       }
@@ -79,10 +80,11 @@
     "light": {
       "taskbar": {
         "style": "light",
-        "bkcolor": [238, 238, 238],
+        "bkcolor": [243, 243, 243],
         "#bkmode_values": "opaque; transparent; acrylic",
         "bkmode": "acrylic",
-        "transparency": 50,
+        "transparency": 30,
+        "transparency_color": [243, 243, 243],
         "task_line_color": [0, 120, 215],
         "textcolor": "0x000000"
       }

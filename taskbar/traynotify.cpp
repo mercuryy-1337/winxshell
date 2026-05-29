@@ -711,7 +711,7 @@ static BOOL TrayNotifyMessage(HWND hwnd, const NotifyInfo &entry, LPARAM lparam,
 HWND NotifyArea::Create(HWND hwndParent)
 {
     static BtnWindowClass wcTrayNotify(CLASSNAME_TRAYNOTIFY, CS_DBLCLKS);
-    wcTrayNotify.hbrBackground = TASKBAR_BRUSH();
+    wcTrayNotify.hbrBackground = JCfg_TaskbarClassBrush();
     ClientRect clnt(hwndParent);
 
     return Window::Create(WINDOW_CREATOR(NotifyArea), 0,
@@ -1119,8 +1119,11 @@ void NotifyArea::Paint()
 {
     BufferedPaintCanvas canvas(_hwnd);
 
-    // first fill with the background color
-    FillRect(canvas, &canvas.rcPaint, TASKBAR_BRUSH());
+    // first fill with the background color (skip in translucent themes so
+    // DWM's acrylic backdrop shows through; icons paint on top of acrylic).
+    if (!JCfg_TaskbarIsTranslucent()) {
+        FillRect(canvas, &canvas.rcPaint, TASKBAR_BRUSH());
+    }
 
     // draw icons
     int x = NOTIFYICON_X;
@@ -1701,7 +1704,7 @@ ClockWindow::ClockWindow(HWND hwnd)
 HWND ClockWindow::Create(HWND hwndParent)
 {
     static BtnWindowClass wcClock(CLASSNAME_CLOCKWINDOW, CS_DBLCLKS);
-    wcClock.hbrBackground = TASKBAR_BRUSH();
+    wcClock.hbrBackground = JCfg_TaskbarClassBrush();
     ClientRect clnt(hwndParent);
 
     WindowCanvas canvas(hwndParent);
@@ -1835,7 +1838,9 @@ void ClockWindow::Paint()
 
     PaintCanvas canvas(_hwnd);
 
-    FillRect(canvas, &canvas.rcPaint, TASKBAR_BRUSH());
+    if (!JCfg_TaskbarIsTranslucent()) {
+        FillRect(canvas, &canvas.rcPaint, TASKBAR_BRUSH());
+    }
 
     BkMode bkmode(canvas, TRANSPARENT);
     FontSelection font(canvas, g_Globals._hDefaultFont);
@@ -1861,7 +1866,7 @@ ShowDesktopButtonWindow::ShowDesktopButtonWindow(HWND hwnd)
 HWND ShowDesktopButtonWindow::Create(HWND hwndParent)
 {
     static BtnWindowClass wcShowDesktopBtn(CLASSNAME_SHOWDESKTOPBUTTONWINDOW, CS_VREDRAW | CS_HREDRAW | CS_DBLCLKS | CS_OWNDC | BS_OWNERDRAW);
-    wcShowDesktopBtn.hbrBackground = TASKBAR_BRUSH();
+    wcShowDesktopBtn.hbrBackground = JCfg_TaskbarClassBrush();
     wcShowDesktopBtn.hCursor = LoadCursor(NULL, IDC_HAND);
     ClientRect clnt(hwndParent);
 
@@ -1888,7 +1893,9 @@ void ShowDesktopButtonWindow::Paint()
 {
     static RECT rc;
     PaintCanvas canvas(_hwnd);
-    FillRect(canvas, &canvas.rcPaint, TASKBAR_BRUSH());
+    if (!JCfg_TaskbarIsTranslucent()) {
+        FillRect(canvas, &canvas.rcPaint, TASKBAR_BRUSH());
+    }
     rc = canvas.rcPaint;
     rc.right = 1;
     FillRect(canvas, &rc, GetSysColorBrush(COLOR_BTNSHADOW));
