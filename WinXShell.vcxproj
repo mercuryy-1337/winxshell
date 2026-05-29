@@ -612,6 +612,14 @@ cscript ResBuilder.vbs
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="utility\system_theme.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="utility\utility.cpp" />
     <ClCompile Include="utility\window.cpp" />
     <ClCompile Include="taskbar\desktopbar.cpp" />
@@ -714,6 +722,7 @@ cscript ResBuilder.vbs
     <ClInclude Include="utility\shellclasses.h" />
     <ClInclude Include="utility\TrayHelper.h" />
     <ClInclude Include="utility\UNIBASE.h" />
+    <ClInclude Include="utility\system_theme.h" />
     <ClInclude Include="utility\utility.h" />
     <ClInclude Include="utility\window.h" />
     <ClInclude Include="resource.h" />

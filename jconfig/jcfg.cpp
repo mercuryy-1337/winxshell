@@ -6,6 +6,7 @@
 #include <Shlwapi.h>
 #include "../vendor/json.h"
 #include "jcfg.h"
+#include "../utility/system_theme.h"
 
 using namespace std;
 using namespace json;
@@ -178,6 +179,27 @@ Update_KeyName(Object *jcfg)
 }
 
 bool JCfg_GetDesktopBarUseSmallIcon();
+
+string_t JCfg_ResolveActiveTheme(string_t key1)
+{
+    Value v = JCfg_GetValue(&g_JCfg, key1, TEXT("theme"), Value());
+    string_t name = v.ToString();
+    if (name.empty() || name == TEXT("auto")) {
+        return SystemTheme_Name();
+    }
+    return name;
+}
+
+void JCfg_RefreshThemeCache()
+{
+    if (g_JCfg_taskbar_bkbrush) {
+        DeleteObject(g_JCfg_taskbar_bkbrush);
+        g_JCfg_taskbar_bkbrush = NULL;
+    }
+    g_JCfg_taskbar_bkbrush = CreateSolidBrush(TASKBAR_BKCOLOR());
+    g_JCfg_taskbar_textcolor = TASKBAR_GETTEXTCOLOR();
+    g_JCfg_taskbar_themestyle = TASKBAR_GETTHEMESTYLE();
+}
 
 static void
 JCfg_init() {

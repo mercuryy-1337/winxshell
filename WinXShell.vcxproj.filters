@@ -12,6 +12,9 @@
     <ClCompile Include="winui\WinUIHost.cpp">
       <Filter>winui</Filter>
     </ClCompile>
+    <ClCompile Include="utility\system_theme.cpp">
+      <Filter>utility</Filter>
+    </ClCompile>
     <ClCompile Include="desktop\desktop.cpp">
       <Filter>desktop</Filter>
     </ClCompile>
@@ -193,6 +196,9 @@
     </ClInclude>
     <ClInclude Include="winui\WinUIHost.h">
       <Filter>winui</Filter>
+    </ClInclude>
+    <ClInclude Include="utility\system_theme.h">
+      <Filter>utility</Filter>
     </ClInclude>
     <ClInclude Include="desktop\desktop.h">
       <Filter>desktop</Filter>

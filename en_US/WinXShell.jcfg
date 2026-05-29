@@ -82,7 +82,7 @@
         "bkcolor": [238, 238, 238],
         "#bkmode_values": "opaque; transparent; acrylic",
         "bkmode": "acrylic",
-        "transparency": 100,
+        "transparency": 50,
         "task_line_color": [0, 120, 215],
         "textcolor": "0x000000"
       }
@@ -95,7 +95,8 @@
     "task_close_button": true,
     "no_task_title": false,
     "userebar": false,
-    "theme": "dark",
+    "#theme_values": "auto; dark; light; blue",
+    "theme": "auto",
     "height": 40
   },
   "::STARTMENU": {

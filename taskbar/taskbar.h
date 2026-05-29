@@ -44,6 +44,7 @@
 
 
 #define PM_GET_LAST_ACTIVE  (WM_APP+0x1D)
+#define PM_THEME_CHANGED    (WM_APP+0x24)  // OS toggled dark/light; reapply acrylic + repaint
 
 
 /// internal task bar button management entry

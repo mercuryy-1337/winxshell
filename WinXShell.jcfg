@@ -151,7 +151,7 @@
         "bkcolor": [238, 238, 238],
         "#bkmode_values": "opaque; transparent; acrylic",
         "bkmode": "acrylic",
-        "transparency": 100,
+        "transparency": 50,
         "task_line_color": [0, 120, 215],
         "textcolor": "0x000000"
       }
@@ -164,7 +164,8 @@
     "::显示任务关闭按钮": true,
     "::隐藏任务标题": false,
     "::使用Rebar": false,
-    "::主题": "dark",
+    "#主题_values": "auto; dark; light; blue",
+    "::主题": "auto",
     "::高度": 40
   },
   "::开始菜单": {

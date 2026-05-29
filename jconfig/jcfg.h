@@ -27,6 +27,16 @@ extern Value JCfg_GetValue(Object *jcfg, string_t key1, string_t key2, Value def
 extern Value JCfg_GetValue(Object *jcfg, string_t key1, string_t key2, string_t key3, Value defval);
 extern Value JCfg_GetValue(Object *jcfg, string_t key1, string_t key2, string_t key3, string_t key4, Value defval);
 
+// Resolves the active theme name under <key1>.theme in jcfg. When the value
+// is missing, empty, or "auto", returns the OS-detected theme ("light"/"dark")
+// via SystemTheme_Name. Used by the JCFG_THEME_* macros so any taskbar lookup
+// transparently follows the system theme.
+extern string_t JCfg_ResolveActiveTheme(string_t key1);
+
+// Re-reads taskbar theme-derived globals (brush, text color, themestyle) after
+// the OS theme changes. Caller is responsible for triggering a repaint.
+extern void JCfg_RefreshThemeCache();
+
 extern int JCfg_GetDesktopBarHeight();
 extern bool JCfg_TaskThumbnailEnabled();
 
@@ -66,7 +76,7 @@ extern bool JCfg_TaskThumbnailEnabled();
 #define JCFG_TB_SET(n, ...) (SET_JCFG##n("JS_TASKBAR", __VA_ARGS__))
 #define JCFG_QL_SET(n, ...) (SET_JCFG##n("JS_QUICKLAUNCH", __VA_ARGS__))
 
-#define JCFG_THEME_DEF(key1, key2, key3, defval) (JCfg_GetValue(&g_JCfg, TEXT("JS_THEMES"), JCFG2(key1, "theme"), TEXT(key2), TEXT(key3), defval))
+#define JCFG_THEME_DEF(key1, key2, key3, defval) (JCfg_GetValue(&g_JCfg, TEXT("JS_THEMES"), JCfg_ResolveActiveTheme(TEXT(key1)), TEXT(key2), TEXT(key3), defval))
 #define JCFG_THEME_COLOR(key1, key2, key3) (JCFG_THEME_DEF(key1, key2, key3, Value(0)))
 #define JCFG_THEME_VALUE(key1, key2, key3, defval) (JCFG_THEME_DEF(key1, key2, key3, defval))
 

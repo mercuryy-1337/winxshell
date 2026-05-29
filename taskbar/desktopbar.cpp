@@ -38,6 +38,7 @@
 #include "quicklaunch.h"
 
 #include "../dialogs/settings.h"
+#include "../utility/system_theme.h"
 #include "../customization/startbutton.h"
 
 
@@ -616,6 +617,13 @@ LRESULT DesktopBar::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
     case WM_SETTINGCHANGE: {
         if (wparam == SPI_SETWORKAREA) {
             NotifySetWorkArea(_hwnd);
+        } else if (SystemTheme_IsImmersiveColorSetChange(lparam)) {
+            // OS toggled dark/light. With "::主题":"auto" the next theme
+            // lookup will resolve to the new mode; flush the cached brush /
+            // text color and tell the taskbar to reapply acrylic + repaint.
+            JCfg_RefreshThemeCache();
+            if (_hwndTaskBar) SendMessage(_hwndTaskBar, PM_THEME_CHANGED, 0, 0);
+            InvalidateRect(_hwnd, NULL, TRUE);
         }
         break;
     }
