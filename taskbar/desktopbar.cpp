@@ -68,7 +68,7 @@ DesktopBar::~DesktopBar()
 HWND DesktopBar::Create()
 {
     static BtnWindowClass wcDesktopBar(CLASSNAME_EXPLORERBAR);
-    wcDesktopBar.hbrBackground = JCfg_TaskbarClassBrush();
+    wcDesktopBar.hbrBackground = TASKBAR_BRUSH();
 
     RECT rect;
 

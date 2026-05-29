@@ -169,7 +169,7 @@ HWND TaskBar::Create(HWND hwndParent)
 
     int taskbar_pos = 80;   // This start position will be adjusted in DesktopBar::Resize().
     static BtnWindowClass wcTaskBar(CLASSNAME_TASKBAR);
-    wcTaskBar.hbrBackground = JCfg_TaskbarClassBrush();
+    wcTaskBar.hbrBackground = TASKBAR_BRUSH();
     return Window::Create(WINDOW_CREATOR(TaskBar), 0,
                           wcTaskBar, TITLE_TASKBAR,
                           WS_CHILD | WS_VISIBLE | CCS_TOP | CCS_NODIVIDER | CCS_NORESIZE,

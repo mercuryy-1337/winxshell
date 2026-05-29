@@ -70,8 +70,8 @@
       "taskbar": {
         "bkcolor": [32, 32, 32],
         "#bkmode_values": "opaque; transparent; acrylic",
-        "bkmode": "acrylic",
-        "transparency": 30,
+        "bkmode": "transparent",
+        "transparency": 22,
         "transparency_color": [32, 32, 32],
         "task_line_color": [238, 238, 238],
         "textcolor": "0xffffff"
@@ -80,11 +80,11 @@
     "light": {
       "taskbar": {
         "style": "light",
-        "bkcolor": [243, 243, 243],
+        "bkcolor": [245, 245, 245],
         "#bkmode_values": "opaque; transparent; acrylic",
-        "bkmode": "acrylic",
-        "transparency": 30,
-        "transparency_color": [243, 243, 243],
+        "bkmode": "transparent",
+        "transparency": 22,
+        "transparency_color": [245, 245, 245],
         "task_line_color": [0, 120, 215],
         "textcolor": "0x000000"
       }
