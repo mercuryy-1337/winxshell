@@ -13,17 +13,7 @@ Lua CJSON
 ----------------------------------------------------------------------------------------
 
 :MAIN
-set "MSBUILD="
-if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
-    for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe`) do set "MSBUILD=%%I"
-)
-if not defined MSBUILD if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" set "MSBUILD=%ProgramFiles%\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
-if not defined MSBUILD if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe" set "MSBUILD=%ProgramFiles%\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe"
-if not defined MSBUILD if exist "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe" set "MSBUILD=%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe"
-if not defined MSBUILD (
-    echo MSBuild.exe not found. Install Visual Studio Build Tools or update build.bat.
-    exit /b 1
-)
+set "MSBUILD=D:\Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe"
 
 set LUA=lua-5.4.7
 set LUA_CJSON=lua-cjson-2.1.0
@@ -36,9 +26,7 @@ if "x%PROCESSOR_ARCHITECTURE%"=="xAMD64" (
     set "PATH=%~dp0vsbuild\7za\x86;%PATH%"
 )
 
-if not exist vsbuild\7za (
-    vsbuild\unzip.exe vsbuild\bin.zip -d vsbuild\
-)
+if not exist vsbuild\7za vsbuild\unzip.exe vsbuild\bin.zip -d vsbuild\
 
 if exist lua goto :CJSON
 

@@ -3,8 +3,7 @@
 #include "DesktopCommand.h"
 
 #ifndef _ARM
-#include <wrl/client.h>
-using Microsoft::WRL::ComPtr;
+#include <atlcomcli.h>
 #endif // !_ARM
 
 #include <Windows.h>
@@ -44,52 +43,27 @@ DesktopCommand::~DesktopCommand()
 void FindDesktopFolderView(REFIID riid, void **ppv)
 {
 #ifndef _ARM
-    if (!ppv)
-        return;
-
-    *ppv = NULL;
-
-    ComPtr<IShellWindows> spShellWindows;
-    HRESULT hr = ::CoCreateInstance(CLSID_ShellWindows, NULL, CLSCTX_ALL, IID_PPV_ARGS(&spShellWindows));
-    if (FAILED(hr) || !spShellWindows)
-        return;
-
-    VARIANT vtLoc;
-    VariantInit(&vtLoc);
-    vtLoc.vt = VT_I4;
-    vtLoc.lVal = CSIDL_DESKTOP;
-
-    VARIANT vtEmpty;
-    VariantInit(&vtEmpty);
+    CComPtr<IShellWindows> spShellWindows;
+    spShellWindows.CoCreateInstance(CLSID_ShellWindows);
+    CComVariant vtLoc(CSIDL_DESKTOP);
+    CComVariant vtEmpty;
 
     long lhwnd;
-    ComPtr<IDispatch> spdisp;
+    CComPtr<IDispatch> spdisp;
 
-    hr = spShellWindows->FindWindowSW(
+    spShellWindows->FindWindowSW(
         &vtLoc, &vtEmpty,
-        SWC_DESKTOP, &lhwnd, SWFO_NEEDDISPATCH, spdisp.GetAddressOf());
+        SWC_DESKTOP, &lhwnd, SWFO_NEEDDISPATCH, &spdisp);
 
-    VariantClear(&vtLoc);
-    VariantClear(&vtEmpty);
+    if (!spdisp) return;
 
-    if (FAILED(hr) || !spdisp)
-        return;
+    CComPtr<IShellBrowser> spBrowser;
+    CComQIPtr<IServiceProvider>(spdisp)->
+        QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&spBrowser));
 
-    ComPtr<IServiceProvider> spServiceProvider;
-    hr = spdisp.As(&spServiceProvider);
-    if (FAILED(hr) || !spServiceProvider)
-        return;
 
-    ComPtr<IShellBrowser> spBrowser;
-    hr = spServiceProvider->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&spBrowser));
-    if (FAILED(hr) || !spBrowser)
-        return;
-
-    ComPtr<IShellView> spView;
-    hr = spBrowser->QueryActiveShellView(&spView);
-    if (FAILED(hr) || !spView)
-        return;
-
+    CComPtr<IShellView> spView;
+    spBrowser->QueryActiveShellView(&spView);
     spView->QueryInterface(riid, ppv);
 #endif
 }
@@ -102,7 +76,7 @@ void DesktopCommand::Refresh()
         return;
     }
 #ifndef _ARM
-    ComPtr<IShellView> spView;
+    CComPtr<IShellView> spView;
 
     FindDesktopFolderView(IID_PPV_ARGS(&spView));
     if (NULL == spView) {
@@ -127,7 +101,7 @@ void DesktopCommand::SetIconSize(int size)
         return;
     }
 #ifndef _ARM
-    ComPtr<IFolderView2> spView;
+    CComPtr<IFolderView2> spView;
 
     FindDesktopFolderView(IID_PPV_ARGS(&spView));
     if (NULL == spView) {
@@ -154,7 +128,7 @@ void DesktopCommand::SetFolderFlags(DWORD dwMask, int checked)
         return;
     }
 #ifndef _ARM
-    ComPtr<IFolderView2> spView;
+    CComPtr<IFolderView2> spView;
     FindDesktopFolderView(IID_PPV_ARGS(&spView));
     if (NULL == spView) {
         return;

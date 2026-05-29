@@ -28,11 +28,9 @@
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{BFBAE588-8C68-4303-9BF6-C830087D8F25}</ProjectGuid>
-    <RootNamespace>Explauncher</RootNamespace>
+    <RootNamespace>WinXShell</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
-    <WindowsTargetPlatformMinVersion>10.0.17763.0</WindowsTargetPlatformMinVersion>
-    <ProjectName>Explauncher</ProjectName>
-    <TargetName>Explauncher</TargetName>
+    <ProjectName>WinXShell</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
@@ -143,7 +141,7 @@
     </Midl>
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>_NO_ALPHABLEND;_DEBUG;WIN32;_WIN32_IE=0x0700;WINVER=0x0A00;_WIN32_WINNT=0x0A00;NTDDI_VERSION=0x0A000006;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT;UILIB_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_NO_ALPHABLEND;_DEBUG;WIN32;_WIN32_IE=0x0700;_WIN32_WINNT=0x0601;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT;UILIB_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MinimalRebuild>true</MinimalRebuild>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -177,7 +175,7 @@
       <TargetMachine>MachineX86</TargetMachine>
     </Link>
     <Manifest>
-      <AdditionalManifestFiles>Explauncher.exe.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
+      <AdditionalManifestFiles>WinXShell.exe.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
     <Bscmake>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -197,7 +195,7 @@ cscript ResBuilder.vbs
     </Midl>
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>_NO_ALPHABLEND;_DEBUG;_ARM;WIN32;_WIN32_IE=0x0700;WINVER=0x0A00;_WIN32_WINNT=0x0A00;NTDDI_VERSION=0x0A000006;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_NO_ALPHABLEND;_DEBUG;_ARM;WIN32;_WIN32_IE=0x0700;_WIN32_WINNT=0x0601;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MinimalRebuild>true</MinimalRebuild>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -231,7 +229,7 @@ cscript ResBuilder.vbs
       </DataExecutionPrevention>
     </Link>
     <Manifest>
-      <AdditionalManifestFiles>Explauncher.exe.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
+      <AdditionalManifestFiles>WinXShell.exe.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
     <Bscmake>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -246,7 +244,7 @@ cscript ResBuilder.vbs
     </Midl>
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>_NO_ALPHABLEND;_DEBUG;WIN32;_WIN32_IE=0x0700;WINVER=0x0A00;_WIN32_WINNT=0x0A00;NTDDI_VERSION=0x0A000006;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT;UILIB_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_NO_ALPHABLEND;_DEBUG;WIN32;_WIN32_IE=0x0700;_WIN32_WINNT=0x0601;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT;UILIB_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <RuntimeTypeInfo>true</RuntimeTypeInfo>
@@ -279,7 +277,7 @@ cscript ResBuilder.vbs
       <DataExecutionPrevention>true</DataExecutionPrevention>
     </Link>
     <Manifest>
-      <AdditionalManifestFiles>Explauncher.exe.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
+      <AdditionalManifestFiles>WinXShell.exe.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
     <Bscmake>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -299,7 +297,7 @@ cscript ResBuilder.vbs
     <ClCompile>
       <Optimization>MinSpace</Optimization>
       <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
-      <PreprocessorDefinitions>_NO_ALPHABLEND;NDEBUG;WIN32;_WIN32_IE=0x0700;WINVER=0x0A00;_WIN32_WINNT=0x0A00;NTDDI_VERSION=0x0A000006;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT;UILIB_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_NO_ALPHABLEND;NDEBUG;WIN32;_WIN32_IE=0x0700;_WIN32_WINNT=0x0601;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT;UILIB_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -332,7 +330,7 @@ cscript ResBuilder.vbs
       <GenerateDebugInformation>No</GenerateDebugInformation>
     </Link>
     <Manifest>
-      <AdditionalManifestFiles>Explauncher.exe.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
+      <AdditionalManifestFiles>WinXShell.exe.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
     <Bscmake>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -353,7 +351,7 @@ cscript ResBuilder.vbs
     <ClCompile>
       <Optimization>MinSpace</Optimization>
       <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
-      <PreprocessorDefinitions>_NO_ALPHABLEND;NDEBUG;_ARM;WIN32;_WIN32_IE=0x0700;WINVER=0x0A00;_WIN32_WINNT=0x0A00;NTDDI_VERSION=0x0A000006;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_NO_ALPHABLEND;NDEBUG;_ARM;WIN32;_WIN32_IE=0x0700;_WIN32_WINNT=0x0601;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -386,7 +384,7 @@ cscript ResBuilder.vbs
       <GenerateDebugInformation>No</GenerateDebugInformation>
     </Link>
     <Manifest>
-      <AdditionalManifestFiles>Explauncher.exe.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
+      <AdditionalManifestFiles>WinXShell.exe.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
     <Bscmake>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -402,7 +400,7 @@ cscript ResBuilder.vbs
     <ClCompile>
       <Optimization>MinSpace</Optimization>
       <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
-      <PreprocessorDefinitions>_NO_ALPHABLEND;NDEBUG;WIN32;_WIN32_IE=0x0700;WINVER=0x0A00;_WIN32_WINNT=0x0A00;NTDDI_VERSION=0x0A000006;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT;UILIB_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_NO_ALPHABLEND;NDEBUG;WIN32;_WIN32_IE=0x0700;_WIN32_WINNT=0x0601;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT;UILIB_STATIC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -434,7 +432,7 @@ cscript ResBuilder.vbs
       <GenerateDebugInformation>false</GenerateDebugInformation>
     </Link>
     <Manifest>
-      <AdditionalManifestFiles>Explauncher.exe.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
+      <AdditionalManifestFiles>WinXShell.exe.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
     <Bscmake>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -797,7 +795,7 @@ cscript ResBuilder.vbs
     <ResourceCompile Include="explorer_intres.rc" />
   </ItemGroup>
   <ItemGroup>
-    <Manifest Include="Explauncher.exe.manifest" />
+    <Manifest Include="WinXShell.exe.manifest" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

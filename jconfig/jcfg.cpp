@@ -18,7 +18,7 @@ using namespace json;
 Object  g_JVARMap;
 Object  g_JCfg;
 
-#define DEF_TASKBARHEIGHT 48
+#define DEF_TASKBARHEIGHT 40
 int g_JCfg_taskbar_iconsize = 24;
 int g_JCfg_taskbar_startmenu_iconsize = 24;
 int g_JCfg_DPI_SX = 96;
@@ -32,10 +32,10 @@ const wstring def_jcfg = L"{\"JS_SYSTEMINFO\":{\"langid\":\"0\"},"
                          L"\"JS_VERBMENUNAME\":{\"2052\":{\"refresh\":\"Refresh(&E)\",\"rename\":\"Rename(&M)\"}},"
                          L"\"JS_FILEEXPLORER\":{\"3rd_filename\":\"\"},"
                          L"\"JS_THEMES\":{"
-                         L"\"default\":{\"taskbar\":{\"bkcolor\":[0,0,0],\"task_line_color\":[238,238,238],\"textcolor\":\"0xffffff\",\"highlight_color\":[255,255,255],\"hover_color\":[255,255,255],\"highlight_alpha\":44,\"hover_alpha\":28}},"
-                         L"\"blue\":{\"taskbar\":{\"bkcolor\":[0,120,215],\"task_line_color\":[176,176,176],\"textcolor\":\"0xffffff\",\"highlight_color\":[255,255,255],\"hover_color\":[255,255,255],\"highlight_alpha\":44,\"hover_alpha\":28}},"
-                         L"\"dark\":{\"taskbar\":{\"bkcolor\":[0,0,0],\"task_line_color\":[238,238,238],\"textcolor\":\"0xffffff\",\"highlight_color\":[255,255,255],\"hover_color\":[255,255,255],\"highlight_alpha\":44,\"hover_alpha\":28}},"
-                         L"\"light\":{\"taskbar\":{\"style\":\"light\",\"bkcolor\":[238,238,238],\"task_line_color\":[0,120,215],\"textcolor\":\"0x000000\",\"highlight_color\":[0,0,0],\"hover_color\":[0,0,0],\"highlight_alpha\":26,\"hover_alpha\":14}}"
+                         L"\"default\":{\"taskbar\":{\"bkcolor\":[0,0,0],\"task_line_color\":[238,238,238],\"textcolor\":\"0xffffff\"}},"
+                         L"\"blue\":{\"taskbar\":{\"bkcolor\":[0,120,215],\"task_line_color\":[176,176,176],\"textcolor\":\"0xffffff\"}},"
+                         L"\"dark\":{\"taskbar\":{\"bkcolor\":[0,0,0],\"task_line_color\":[238,238,238],\"textcolor\":\"0xffffff\"}},"
+                         L"\"light\":{\"taskbar\":{\"style\":\"light\",\"bkcolor\":[238,238,238],\"task_line_color\":[0,120,215],\"textcolor\":\"0x000000\"}}"
                          L"},"
                          L"\"JS_DESKTOP\":{"
                          L"\"bkcolor\":[0,0,0],\"wallpaperstyle\":0,"
@@ -45,9 +45,9 @@ const wstring def_jcfg = L"{\"JS_SYSTEMINFO\":{\"langid\":\"0\"},"
                          L"},"
                          L"\"JS_TASKBAR\":{\"notaskbar\":false,\"visible\":true,\"theme\":\"dark\",\"bkcolor\":[0,0,0],\"bkcolor2\":[0,122,204],\"textcolor\":\"0xffffff\","
                          L"\"userebar\":false,\"rebarlock\":false,\"padding-top\":0,"
-                         L"\"smallicon\":false,\"height\":48,\"icon_size\":32,\"no_task_title\":true,\"task_close_button\":false,\"centered\":true,\"rounded_highlight\":true,\"animations\":true,\"animation_duration\":200,\"button_width\":44,\"*x600\":{\"height\":40,\"icon_size\":16}},"
+                         L"\"smallicon\":false,\"height\":40,\"icon_size\":32,\"*x600\":{\"height\":32,\"icon_size\":16}},"
                          L"\"JS_STARTMENU\":{\"text\":\"\"},"
-                         L"\"JS_QUICKLAUNCH\":{\"3rd_startup_arguments\":\"\",\"maxiconsinrow\":8,\"hide_showdesktop\":true,\"hide_fixedsep\":true,\"button_width\":44},"
+                         L"\"JS_QUICKLAUNCH\":{\"3rd_startup_arguments\":\"\",\"maxiconsinrow\":8},"
                          L"\"JS_NOTIFYAREA\":{\"notifyicon_size\":16,\"padding-left\":20,\"padding-right\":20}}";
 
 
@@ -229,47 +229,6 @@ Load_JCfg(string_t filename)
     g_JCfg = jcfg;
     JCfg_init();
     return jcfg;
-}
-
-bool
-Load_JCfgOverride(string_t filename)
-{
-    if (filename.empty() || GetFileAttributes(filename.c_str()) == INVALID_FILE_ATTRIBUTES)
-        return false;
-
-    Object override_cfg = Load_JsonCfg(filename);
-    Merge_JCfg(&g_JCfg, &override_cfg, JCFG_MERGEFLAG_OVERWRITE);
-    JCfg_init();
-    return true;
-}
-
-bool
-Save_JCfgFile(string_t filename, const Object &obj)
-{
-    if (filename.empty())
-        return false;
-
-    string_t serialized = Serialize(obj);
-    std::string utf8_serialized;
-#ifdef UNICODE
-    StringCodeChange((LPCCH)serialized.c_str(), CP_UNICODE, utf8_serialized, CP_UTF8);
-#else
-    StringCodeChange((LPCCH)serialized.c_str(), CP_ACP, utf8_serialized, CP_UTF8);
-#endif
-
-    HANDLE hfile = CreateFile(filename.c_str(), GENERIC_WRITE, FILE_SHARE_READ, NULL,
-        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hfile == INVALID_HANDLE_VALUE)
-        return false;
-
-    static const BYTE bom[] = { 0xEF, 0xBB, 0xBF };
-    DWORD written = 0;
-    BOOL ok = WriteFile(hfile, bom, sizeof(bom), &written, NULL);
-    if (ok && !utf8_serialized.empty())
-        ok = WriteFile(hfile, utf8_serialized.data(), (DWORD)utf8_serialized.size(), &written, NULL);
-
-    CloseHandle(hfile);
-    return ok == TRUE;
 }
 
 

@@ -9,16 +9,7 @@ struct PictureButton2 : public PictureButton {
     PictureButton2(HWND hwnd, HICON hIcon, HICON hIcon2, HBRUSH hbrush, HBRUSH hbrush2,
         COLORREF textcolor = -1, bool flat = false)
         : super(hwnd, hIcon, hbrush, textcolor, flat),
-        _hIcon(hIcon), _hHoverIcon(hIcon2), _hPressedIcon(hIcon2), _hBmp(0), _hBrush(hbrush), _hHotBrush(hbrush2), _flat(flat), _hovered(false)
-    {
-        _cx = super::_cx;
-        _cy = super::_cy;
-        }
-
-    PictureButton2(HWND hwnd, HICON hIcon, HICON hHoverIcon, HICON hPressedIcon, HBRUSH hbrush, HBRUSH hbrush2,
-        COLORREF textcolor = -1, bool flat = false)
-        : super(hwnd, hIcon, hbrush, textcolor, flat),
-        _hIcon(hIcon), _hHoverIcon(hHoverIcon), _hPressedIcon(hPressedIcon), _hBmp(0), _hBrush(hbrush), _hHotBrush(hbrush2), _flat(flat), _hovered(false)
+        _hIcon(hIcon), _hHotIcon(hIcon2), _hBmp(0), _hBrush(hbrush), _hHotBrush(hbrush2), _flat(flat)
     {
         _cx = super::_cx;
         _cy = super::_cy;
@@ -27,8 +18,7 @@ struct PictureButton2 : public PictureButton {
 protected:
     void DrawItem(LPDRAWITEMSTRUCT dis);
     HICON   _hIcon;
-    HICON   _hHoverIcon;
-    HICON   _hPressedIcon;
+    HICON   _hHotIcon;
     HBITMAP _hBmp;
     HBRUSH  _hBrush;
     HBRUSH  _hHotBrush;
@@ -38,6 +28,5 @@ protected:
 
     COLORREF _textColor;
     bool    _flat;
-    bool    _hovered;
 };
 

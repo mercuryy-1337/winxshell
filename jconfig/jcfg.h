@@ -20,8 +20,6 @@ extern string_t g_JCfg_taskbar_themestyle;
 
 extern Object Load_JsonCfg(string_t filename);
 extern Object Load_JCfg(string_t filename);
-extern bool Load_JCfgOverride(string_t filename);
-extern bool Save_JCfgFile(string_t filename, const Object &obj);
 extern COLORREF JValueToColor(Value val);
 
 extern Value JCfg_GetValue(Object *jcfg, string_t key1, Value defval);
@@ -94,5 +92,5 @@ extern bool JCfg_TaskThumbnailEnabled();
 #define DPI_SY(y) (MulDiv((y),g_JCfg_DPI_SY, 96))
 
 #define STARTMENUROOT_ICON_SIZE     DPI_SX(g_JCfg_taskbar_startmenu_iconsize)
-#define TASKBAR_ICON_SIZE           DPI_SX(g_JCfg_taskbar_iconsize)
+#define TASKBAR_ICON_SIZE           g_JCfg_taskbar_iconsize
 

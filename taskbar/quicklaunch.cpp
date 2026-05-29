@@ -31,99 +31,14 @@
 #include "../resource.h"
 
 #include "quicklaunch.h"
-#include "taskbar.h"
-#include "taskbar_identity.h"
-#include "../utility/taskbar_draw.h"
 
 #include <Uxtheme.h>
 
 #define WM_SHNOTIFY  (WM_USER+0x1)
-#define ID_TIMER_DESTORYTHUMBNAIL 101
-
-extern int DrawThumbnailWindows(HINSTANCE hInstance, const HWND *hwnds, int hwnd_count, HWND hwndToolbar, int buttonIndex);
-extern void DestoryThumbnailWindow();
-extern bool IsThumbnailCursorInRegion();
-
-static String ResolveQuickLaunchEntryAppKey(Entry *entry, int id)
-{
-    if (id == ID_EXPLORE) {
-        String peazip_key = taskbar_identity::GetPeaZipAppKey();
-        if (!peazip_key.empty())
-            return peazip_key;
-
-        return taskbar_identity::GetExplorerAppKey();
-    }
-
-    if (!entry)
-        return String();
-
-    TCHAR path[MAX_PATH] = { 0 };
-    if (!entry->get_path(path, COUNTOF(path)))
-        return String();
-
-    return taskbar_identity::GetShortcutAppKey(path);
-}
-
-static HWND FindTaskBarWindow(HWND hwndQuickLaunch)
-{
-    return FindWindowEx(GetParent(hwndQuickLaunch), NULL, CLASSNAME_TASKBAR, TITLE_TASKBAR);
-}
-
-static void DrawQuickLaunchButtonHighlight(HDC hdc, const RECT &item_rect, float hover_progress, float active_progress)
-{
-    int hl_pad_y = DPI_SY(4);
-    int hl_margin_x = DPI_SX(1);
-    RECT highlight_rect = {
-        item_rect.left + hl_margin_x,
-        item_rect.top + hl_pad_y,
-        item_rect.right - hl_margin_x,
-        item_rect.bottom - hl_pad_y
-    };
-
-    if (highlight_rect.bottom <= highlight_rect.top)
-        return;
-
-    if (hover_progress > 0.0f) {
-        taskbar_draw::FillRoundedRect(
-            hdc,
-            highlight_rect,
-            taskbar_draw::GetHighlightRadius(),
-            taskbar_draw::GetHoverColor(),
-            taskbar_draw::GetHoverAlpha());
-    }
-
-    if (active_progress > 0.0f) {
-        taskbar_draw::FillRoundedRect(
-            hdc,
-            highlight_rect,
-            taskbar_draw::GetHighlightRadius(),
-            taskbar_draw::GetHighlightColor(),
-            taskbar_draw::GetHighlightAlpha());
-    }
-}
-
-static int QueryTaskbarGroupState(HWND hwndTaskBar, const String &app_key, HWND *windows, int window_capacity, HWND *primary_hwnd, bool *active)
-{
-    if (!hwndTaskBar || app_key.empty())
-        return 0;
-
-    TaskbarGroupStateQuery query = { app_key.c_str(), 0, 0, FALSE, windows, window_capacity };
-    SendMessage(hwndTaskBar, PM_QUERY_GROUP_STATE, 0, (LPARAM)&query);
-
-    if (primary_hwnd)
-        *primary_hwnd = query._primary_hwnd;
-    if (active)
-        *active = query._active ? true : false;
-
-    return query._window_count;
-}
 
 QuickLaunchEntry::QuickLaunchEntry()
 {
     _hbmp = 0;
-    _primary_hwnd = 0;
-    _running_count = 0;
-    _active = false;
 }
 
 QuickLaunchMap::~QuickLaunchMap()
@@ -141,7 +56,6 @@ QuickLaunchBar::QuickLaunchBar(HWND hwnd)
 {
     CONTEXT("QuickLaunchBar::QuickLaunchBar()");
 
-    _himl = 0;
     _dir = NULL;
     _next_id = IDC_FIRST_QUICK_ID;
     _btn_dist = 20;
@@ -151,25 +65,11 @@ QuickLaunchBar::QuickLaunchBar(HWND hwnd)
     _need_reload = 1;
     _hSHNotify = 0;
 
-    _btn_width = taskbar_draw::GetQuickLaunchSlotWidth();
+    _btn_width = JCFG2_DEF("JS_QUICKLAUNCH", "button_width", DESKTOPBARBAR_HEIGHT).ToInt();
     _icon_area = { 0, -2, _btn_width, DESKTOPBARBAR_HEIGHT };
 
     String msstyle_button = JCFG2_DEF("JS_QUICKLAUNCH", "msstyle_button", TEXT("Taskbar")).ToString();
-    if (taskbar_draw::IsModernTaskbarEnabled()) {
-        _icon_area.top = 0;
-        SetWindowTheme(hwnd, L"", L"");
-
-        SendMessage(hwnd, TB_SETPADDING, 0, MAKELPARAM(0, 0));
-
-        TBMETRICS metrics;
-        metrics.cbSize = sizeof(TBMETRICS);
-        metrics.dwMask = TBMF_BARPAD | TBMF_BUTTONSPACING;
-        metrics.cxBarPad = 0;
-        metrics.cyBarPad = 0;
-        metrics.cxButtonSpacing = 0;
-        metrics.cyButtonSpacing = 0;
-        SendMessage(hwnd, TB_SETMETRICS, 0, (LPARAM)&metrics);
-    } else if (msstyle_button != TEXT("")) {
+    if (msstyle_button != TEXT("")) {
         SetWindowTheme(hwnd, msstyle_button, L"Toolbar"); //TaskBar
         if (msstyle_button == TEXT("BB")) {
             _icon_area.top = -4;
@@ -183,12 +83,6 @@ QuickLaunchBar::QuickLaunchBar(HWND hwnd)
     SendMessage(hwnd, TB_SETBUTTONWIDTH, 0, MAKELPARAM(_btn_width, _btn_width));
     SendMessage(hwnd, TB_SETBITMAPSIZE, 0, MAKELPARAM(_btn_width, DESKTOPBARBAR_HEIGHT));
 
-    _himl = ImageList_Create(_btn_width, DESKTOPBARBAR_HEIGHT, ILC_COLOR32, 16, 16);
-    if (_himl) {
-        ImageList_SetBkColor(_himl, CLR_NONE);
-        SendMessage(hwnd, TB_SETIMAGELIST, 0, (LPARAM)_himl);
-    }
-
     // delay refresh to some time later
     PostMessage(hwnd, PM_REFRESH, 0, 0);
     // SetTimer(hwnd, PM_RELOAD_BUTTONS, 10000, NULL);
@@ -199,8 +93,6 @@ QuickLaunchBar::~QuickLaunchBar()
 {
     if (_hSHNotify != 0)
         SHChangeNotifyDeregister(_hSHNotify);
-    if (_himl)
-        ImageList_Destroy(_himl);
     delete _dir;
 }
 
@@ -263,9 +155,6 @@ void QuickLaunchBar::ReloadShortcuts()
         SendMessage(_hwnd, TB_DELETEBUTTON, i, 0);
     }
 
-    if (_himl)
-        ImageList_RemoveAll(_himl);
-
     AddShortcuts();
 }
 
@@ -302,7 +191,7 @@ void QuickLaunchBar::AddShortcuts()
     WindowCanvas canvas(_hwnd);
 
     COLORREF bk_color = TASKBAR_TEXTCOLOR();
-    HBRUSH bk_brush = NULL;
+    HBRUSH bk_brush = TASKBAR_BRUSH(); //GetSysColorBrush(COLOR_BTNFACE);
 
 
     static int bHideShowDesktop = -1;
@@ -310,10 +199,9 @@ void QuickLaunchBar::AddShortcuts()
     static int bHideFixedSep = -1;
     static int bHideUserIcons = -1;
     if (bHideShowDesktop == -1) {
-        bool modern_style = taskbar_draw::IsModernTaskbarEnabled();
-        bHideShowDesktop = JCFG2_DEF("JS_QUICKLAUNCH", "hide_showdesktop", modern_style).ToBool() ? 1 : 0;
+        bHideShowDesktop = JCFG2_DEF("JS_QUICKLAUNCH", "hide_showdesktop", false).ToBool() ? 1 : 0;
         bHideFileExplorer = JCFG2_DEF("JS_QUICKLAUNCH", "hide_fileexplorer", false).ToBool() ? 1 : 0;
-        bHideFixedSep = JCFG2_DEF("JS_QUICKLAUNCH", "hide_fixedsep", modern_style).ToBool() ? 1 : 0;
+        bHideFixedSep = JCFG2_DEF("JS_QUICKLAUNCH", "hide_fixedsep", false).ToBool() ? 1 : 0;
         bHideUserIcons = JCFG2_DEF("JS_QUICKLAUNCH", "hide_usericons", false).ToBool() ? 1 : 0;
         if (bHideShowDesktop != 1) _fixed_btn++;
         if (bHideFileExplorer != 1) _fixed_btn++;
@@ -326,16 +214,7 @@ void QuickLaunchBar::AddShortcuts()
         AddButton(ID_MINIMIZE_ALL, g_Globals._icon_cache.get_icon(ICID_MINIMIZE).create_bitmap(bk_color, bk_brush, canvas, TASKBAR_ICON_SIZE, rect), ResString(IDS_MINIMIZE_ALL), NULL);
     }
     if (bHideFileExplorer != 1) {
-        TCHAR peazip_path[MAX_PATH] = { 0 };
-        if (TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path))) {
-            const Icon &icon = g_Globals._icon_cache.extract(peazip_path, ICF_LARGE | ICF_NOLINKOVERLAY);
-            HBITMAP hbmp = ((ICON_ID)icon != ICID_NONE && (ICON_ID)icon != ICID_UNKNOWN) ?
-                icon.create_bitmap(bk_color, bk_brush, canvas, TASKBAR_ICON_SIZE, rect) :
-                g_Globals._icon_cache.get_icon(ICID_APP).create_bitmap(bk_color, bk_brush, canvas, TASKBAR_ICON_SIZE, rect);
-            AddButton(ID_EXPLORE, hbmp, TEXT("PeaZip"), NULL);
-        } else {
-            AddButton(ID_EXPLORE, g_Globals._icon_cache.get_icon(ICID_EXPLORER).create_bitmap(bk_color, bk_brush, canvas, TASKBAR_ICON_SIZE, rect), ResString(IDS_TITLE), NULL);
-        }
+        AddButton(ID_EXPLORE, g_Globals._icon_cache.get_icon(ICID_EXPLORER).create_bitmap(bk_color, bk_brush, canvas, TASKBAR_ICON_SIZE, rect), ResString(IDS_TITLE), NULL);
     }
 
     if (_fixed_btn != 0 && bHideFixedSep != 1) {
@@ -378,8 +257,6 @@ void QuickLaunchBar::AddShortcuts()
     SendMessage(GetParent(_hwnd), RB_SETBANDINFO, (WPARAM)0, (LPARAM)&rbBand);
     SendMessage(GetParent(_hwnd), PM_RESIZE_CHILDREN, 0, 0);
 
-    RefreshRunningState();
-
     if (_need_reload == 0) return;
 
     if (_hSHNotify != 0) return;
@@ -400,71 +277,23 @@ void QuickLaunchBar::AddShortcuts()
 
 void QuickLaunchBar::AddButton(int id, HBITMAP hbmp, LPCTSTR name, Entry *entry, int flags)
 {
-    int bmp_idx = -1;
-    if (_himl)
-        bmp_idx = ImageList_Add(_himl, hbmp, 0);
-    if (!_himl || bmp_idx == -1) {
-        TBADDBITMAP ab = {0, (UINT_PTR)hbmp};
-        bmp_idx = (int)SendMessage(_hwnd, TB_ADDBITMAP, 1, (LPARAM)&ab);
-    }
+    TBADDBITMAP ab = {0, (UINT_PTR)hbmp};
+    int bmp_idx = (int)SendMessage(_hwnd, TB_ADDBITMAP, 1, (LPARAM)&ab);
 
     QuickLaunchEntry qle;
 
     qle._hbmp = hbmp;
     qle._title = name;
     qle._entry = entry;
-    qle._app_key = ResolveQuickLaunchEntryAppKey(entry, id);
 
     _entries[id] = qle;
 
-    TBBUTTON btn = {0, 0, (BYTE)flags, BTNS_BUTTON | BTNS_NOPREFIX, {0, 0}, 0, 0};
+    TBBUTTON btn = {0, 0, flags, BTNS_BUTTON | BTNS_NOPREFIX, {0, 0}, 0, 0};
 
     btn.idCommand = id;
     btn.iBitmap = bmp_idx;
 
     SendMessage(_hwnd, TB_INSERTBUTTON, INT_MAX, (LPARAM)&btn);
-}
-
-void QuickLaunchBar::RefreshRunningState()
-{
-    for (QuickLaunchMap::iterator it = _entries.begin(); it != _entries.end(); ++it) {
-        it->second._primary_hwnd = 0;
-        it->second._running_count = 0;
-        it->second._active = false;
-    }
-
-    HWND hwndTaskBar = FindTaskBarWindow(_hwnd);
-    if (!hwndTaskBar) {
-        InvalidateRect(_hwnd, NULL, FALSE);
-        return;
-    }
-
-    for (QuickLaunchMap::iterator it = _entries.begin(); it != _entries.end(); ++it) {
-        QuickLaunchEntry &entry = it->second;
-        if (entry._app_key.empty())
-            continue;
-
-        entry._running_count = QueryTaskbarGroupState(hwndTaskBar, entry._app_key, NULL, 0, &entry._primary_hwnd, &entry._active);
-    }
-
-    InvalidateRect(_hwnd, NULL, FALSE);
-}
-
-void QuickLaunchBar::ActivateRunningEntry(const QuickLaunchEntry &qle, bool can_minimize, bool can_restore)
-{
-    HWND hwnd = qle._primary_hwnd;
-    if (!hwnd || !IsWindow(hwnd))
-        return;
-
-    bool minimize_it = can_minimize && !IsIconic(hwnd) && hwnd == GetForegroundWindow();
-
-    if (can_restore && !minimize_it && IsIconic(hwnd))
-        PostMessage(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0);
-
-    SetForegroundWindow(hwnd);
-
-    if (minimize_it)
-        PostMessage(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
 }
 
 #ifdef _DEBUG
@@ -524,11 +353,6 @@ LRESULT QuickLaunchBar::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
     case PM_REFRESH:
         AddShortcuts();
         break;
-
-    case PM_UPDATE_DESKTOP:
-        RefreshRunningState();
-        break;
-
     case PM_GET_WIDTH: {
         // take line wrapping into account
         int btns = (int)SendMessage(_hwnd, TB_BUTTONCOUNT, 0, 0);
@@ -558,12 +382,6 @@ LRESULT QuickLaunchBar::WndProc(UINT nmsg, WPARAM wparam, LPARAM lparam)
         if (wparam == PM_RELOAD_BUTTONS) {
             ReloadShortcuts();
             KillTimer(_hwnd, PM_RELOAD_BUTTONS);
-        } else if (wparam == ID_TIMER_DESTORYTHUMBNAIL) {
-            KillTimer(_hwnd, ID_TIMER_DESTORYTHUMBNAIL);
-            if (!IsThumbnailCursorInRegion())
-                DestoryThumbnailWindow();
-            else
-                SetTimer(_hwnd, ID_TIMER_DESTORYTHUMBNAIL, 200, NULL);
         }
         break;
     case WM_CONTEXTMENU: {
@@ -608,22 +426,8 @@ int QuickLaunchBar::Command(int id, int code)
 {
     CONTEXT("QuickLaunchBar::Command()");
 
-    if (id == ID_EXPLORE) {
-        TCHAR peazip_path[MAX_PATH] = { 0 };
-        if (TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path))) {
-            launch_file(_hwnd, peazip_path, SW_SHOWNORMAL);
-            return 0;
-        }
-    }
-
-    QuickLaunchMap::iterator found = _entries.find(id);
-    if (found != _entries.end()) {
-        QuickLaunchEntry &qle = found->second;
-
-        if (qle._running_count > 0 && qle._primary_hwnd) {
-            ActivateRunningEntry(qle);
-            return 0;
-        }
+    if ((id & ~0xFF) == IDC_FIRST_QUICK_ID) {
+        QuickLaunchEntry &qle = _entries[id];
 
         if (qle._entry) {
             qle._entry->launch_entry(_hwnd);
@@ -652,107 +456,7 @@ int QuickLaunchBar::Notify(int id, NMHDR *pnmh)
         break;
     }
 
-    case NM_CUSTOMDRAW: {
-        LPNMTBCUSTOMDRAW lptbcd = (LPNMTBCUSTOMDRAW)pnmh;
-        switch (lptbcd->nmcd.dwDrawStage) {
-        case CDDS_PREPAINT:
-            return CDRF_NOTIFYITEMDRAW;
-
-        case CDDS_ITEMPREPAINT: {
-            QuickLaunchMap::iterator found = _entries.find((int)lptbcd->nmcd.dwItemSpec);
-            if (found == _entries.end() && (int)lptbcd->nmcd.dwItemSpec >= 0) {
-                TBBUTTON button = {0};
-                if (SendMessage(_hwnd, TB_GETBUTTON, lptbcd->nmcd.dwItemSpec, (LPARAM)&button) != -1)
-                    found = _entries.find(button.idCommand);
-            }
-
-            if (found != _entries.end()) {
-                float hover_progress = ((lptbcd->nmcd.uItemState & CDIS_HOT) == CDIS_HOT) ? 1.0f : 0.0f;
-                float active_progress = found->second._active ? 1.0f : 0.0f;
-                DrawQuickLaunchButtonHighlight(lptbcd->nmcd.hdc, lptbcd->nmcd.rc, hover_progress, active_progress);
-            }
-
-            return TBCDRF_NOBACKGROUND | TBCDRF_NOEDGES | TBCDRF_NOOFFSET |
-                TBCDRF_NOETCHEDEFFECT | CDRF_NOTIFYPOSTPAINT;
-        }
-
-        case CDDS_ITEMPOSTPAINT: {
-            QuickLaunchMap::iterator found = _entries.find((int)lptbcd->nmcd.dwItemSpec);
-            if (found == _entries.end() && (int)lptbcd->nmcd.dwItemSpec >= 0) {
-                TBBUTTON button = {0};
-                if (SendMessage(_hwnd, TB_GETBUTTON, lptbcd->nmcd.dwItemSpec, (LPARAM)&button) != -1)
-                    found = _entries.find(button.idCommand);
-            }
-            if (found == _entries.end())
-                return CDRF_DODEFAULT;
-
-            QuickLaunchEntry &entry = found->second;
-            if (entry._running_count > 0) {
-                COLORREF indicator_color = TASKBAR_TASKLINECOLOR();
-                if (indicator_color != MAXDWORD) {
-                    BYTE dot_alpha = entry._active ? taskbar_draw::GetIndicatorActiveAlpha() : taskbar_draw::GetIndicatorIdleAlpha();
-                    int dot_d = DPI_SX(4);
-                    int dot_r = dot_d / 2;
-                    int dot_y = lptbcd->nmcd.rc.bottom - DPI_SY(5) - dot_d;
-                    int btn_cx = (lptbcd->nmcd.rc.left + lptbcd->nmcd.rc.right) / 2;
-
-                    if (entry._running_count >= 2) {
-                        int gap = DPI_SX(3);
-                        RECT d1 = { btn_cx - gap / 2 - dot_d, dot_y, btn_cx - gap / 2, dot_y + dot_d };
-                        RECT d2 = { btn_cx + (gap + 1) / 2, dot_y, btn_cx + (gap + 1) / 2 + dot_d, dot_y + dot_d };
-                        taskbar_draw::FillRoundedRect(lptbcd->nmcd.hdc, d1, dot_r, indicator_color, dot_alpha);
-                        taskbar_draw::FillRoundedRect(lptbcd->nmcd.hdc, d2, dot_r, indicator_color, dot_alpha);
-                    } else {
-                        RECT dot = { btn_cx - dot_r, dot_y, btn_cx + dot_r, dot_y + dot_d };
-                        taskbar_draw::FillRoundedRect(lptbcd->nmcd.hdc, dot, dot_r, indicator_color, dot_alpha);
-                    }
-                }
-            }
-            return CDRF_DODEFAULT;
-        }
-        }
-        break;
-    }
-
-    case TBN_HOTITEMCHANGE:
-        if (JCfg_TaskThumbnailEnabled()) {
-            LPNMTBHOTITEM hotitem = (LPNMTBHOTITEM)pnmh;
-
-            // If hot item is leaving, schedule preview cleanup
-            if (hotitem->dwFlags & HICF_LEAVING) {
-                SetTimer(_hwnd, ID_TIMER_DESTORYTHUMBNAIL, 300, NULL);
-                break;
-            }
-
-            KillTimer(_hwnd, ID_TIMER_DESTORYTHUMBNAIL);
-
-            Point pt(GetMessagePos());
-            ScreenToClient(_hwnd, &pt);
-
-            int idx = (int)SendMessage(_hwnd, TB_HITTEST, 0, (LPARAM)&pt);
-            if (idx >= 0) {
-                TBBUTTON button = {0};
-                if (SendMessage(_hwnd, TB_GETBUTTON, idx, (LPARAM)&button) != -1) {
-                    QuickLaunchMap::iterator found = _entries.find(button.idCommand);
-                    if (found != _entries.end() && found->second._running_count > 0) {
-                        HWND group_windows[32] = { 0 };
-                        HWND hwndTaskBar = FindTaskBarWindow(_hwnd);
-                        int group_count = QueryTaskbarGroupState(hwndTaskBar, found->second._app_key, group_windows, COUNTOF(group_windows), NULL, NULL);
-                        if (group_count > 0) {
-                            int preview_count = group_count;
-                            if (preview_count > (int)COUNTOF(group_windows))
-                                preview_count = (int)COUNTOF(group_windows);
-                            DrawThumbnailWindows(g_Globals._hInstance, group_windows, preview_count, _hwnd, idx);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        break;
-
-    default:
-        return super::Notify(id, pnmh);
+    return super::Notify(id, pnmh);
     }
 
     return 0;

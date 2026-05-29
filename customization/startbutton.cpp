@@ -2,7 +2,6 @@
 #include <precomp.h>
 #include <Uxtheme.h>
 #include "startbutton.h"
-#include "../utility/taskbar_draw.h"
 
 
 void PictureButton2::DrawItem(LPDRAWITEMSTRUCT dis)
@@ -15,49 +14,21 @@ void PictureButton2::DrawItem(LPDRAWITEMSTRUCT dis)
         state |= DFCS_INACTIVE;
 
     POINT imagePos;
+    RECT textRect;
+    int dt_flags;
+
 
     // horizontal centered, vertical centered
     imagePos.x = (dis->rcItem.left + dis->rcItem.right - _cx) / 2;
     imagePos.y = (dis->rcItem.top + dis->rcItem.bottom - _cy) / 2;
 
-    if (_hovered && _hHoverIcon)
-        drawIcon = _hHoverIcon;
-
     if (dis->itemState & ODS_SELECTED) {
         state |= DFCS_PUSHED;
-        if (_hPressedIcon)
-            drawIcon = _hPressedIcon;
+        drawIcon = _hHotIcon;
         drawBrush = _hHotBrush;
     }
 
-    if (taskbar_draw::IsModernTaskbarEnabled()) {
-        FillRect(dis->hDC, &dis->rcItem, _hBrush);
-
-        RECT highlight_rect = {
-            dis->rcItem.left + DPI_SX(1),
-            dis->rcItem.top + DPI_SY(2),
-            dis->rcItem.right - DPI_SX(1),
-            dis->rcItem.bottom - DPI_SY(2)
-        };
-        if (highlight_rect.bottom > highlight_rect.top) {
-            if (_hovered) {
-                taskbar_draw::FillRoundedRect(
-                    dis->hDC,
-                    highlight_rect,
-                    taskbar_draw::GetHighlightRadius(),
-                    taskbar_draw::GetHoverColor(),
-                    taskbar_draw::GetHoverAlpha());
-            }
-            if (dis->itemState & ODS_SELECTED) {
-                taskbar_draw::FillRoundedRect(
-                    dis->hDC,
-                    highlight_rect,
-                    taskbar_draw::GetHighlightRadius(),
-                    taskbar_draw::GetHighlightColor(),
-                    taskbar_draw::GetHighlightAlpha());
-            }
-        }
-    } else if (_flat) {
+    if (_flat) {
         FillRect(dis->hDC, &dis->rcItem, drawBrush);
 
         if (style & BS_FLAT)    // Only with BS_FLAT set, there will be drawn a frame without highlight.

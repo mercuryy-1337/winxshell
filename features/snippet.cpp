@@ -200,19 +200,11 @@ void UpdateSysColor(LPTSTR pszCmdline)
 
 void RegistAppPath() {
     RegSetValue(HKEY_LOCAL_MACHINE,
-        TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Explauncher.exe"),
-        REG_SZ, (JVAR("JVAR_MODULEFILENAME").ToString().c_str()), 0);
-
-    RegSetValue(HKEY_CURRENT_USER,
-        TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Explauncher.exe"),
-        REG_SZ, (JVAR("JVAR_MODULEFILENAME").ToString().c_str()), 0);
-
-    RegSetValue(HKEY_LOCAL_MACHINE,
         TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\WinXShell.exe"),
         REG_SZ, (JVAR("JVAR_MODULEFILENAME").ToString().c_str()), 0);
 
     RegSetValue(HKEY_CURRENT_USER,
-        TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\WinXShell.exe"),
+    TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\WinXShell.exe"),
         REG_SZ, (JVAR("JVAR_MODULEFILENAME").ToString().c_str()), 0);
 }
 
@@ -243,9 +235,7 @@ String getShellTheme() {
     JVAR("ShellTheme") = TEXT("default");
 
     TCHAR theme[MAX_PATH + 1] = { 0 };
-    DWORD dw =  GetEnvironmentVariable(TEXT("EXPLAUNCHER_SHELLTHEME"), theme, MAX_PATH);
-    if (dw == 0)
-        dw = GetEnvironmentVariable(TEXT("WINXSHELL_SHELLTHEME"), theme, MAX_PATH);
+    DWORD dw =  GetEnvironmentVariable(TEXT("WINXSHELL_SHELLTHEME"), theme, MAX_PATH);
     if (dw != 0)  JVAR("ShellTheme") = theme;
 
     DWORD type = REG_DWORD, value = 0, size = sizeof(DWORD);

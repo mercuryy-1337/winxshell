@@ -36,7 +36,12 @@
 
 #include <wincon.h>
 #include <Windows.h>
-#include <gdiplus.h>
+
+#ifndef _WIN32_WINNT_WINBLUE
+#define _WIN32_WINNT_WINBLUE                0x0603
+#endif
+
+#include <VersionHelpers.h>
 
 //#include "dialogs/settings.h"    // for MdiSdiDlg
 
@@ -374,116 +379,9 @@ EXTERN_C {
     extern int ShellHasBeenRun();
 }
 
-struct GdiplusSession {
-    GdiplusSession()
-        : _token(0)
-    {
-        Gdiplus::GdiplusStartupInput startup_input;
-        if (Gdiplus::GdiplusStartup(&_token, &startup_input, NULL) != Gdiplus::Ok)
-            _token = 0;
-    }
-
-    ~GdiplusSession()
-    {
-        if (_token)
-            Gdiplus::GdiplusShutdown(_token);
-    }
-
-    ULONG_PTR _token;
-};
-
-#ifdef USE_WINUI3
-#include <appmodel.h>  // PACKAGE_VERSION
-#include "winui/WinUIHost.h"
-#include "StartMenuUI/WinUIStartMenu.h"
-
-// Mirror of g_Globals._winui3_available exposed without dragging globals.h
-// through the precompiled-header chain in winui/. winui/WinUIHost.cpp reads
-// this directly via extern.
-bool g_winui3_available_flag = false;
-
-// Windows App SDK bootstrapper. The bootstrap DLL is delay-loaded, so a missing
-// runtime drops us back into pure Win32 mode rather than failing to start.
-typedef HRESULT (WINAPI *PFN_MddBootstrapInitialize2)(UINT32, PCWSTR, PACKAGE_VERSION, INT32);
-typedef void    (WINAPI *PFN_MddBootstrapShutdown)();
-
-struct WinAppSdkSession {
-    WinAppSdkSession()
-        : _module(NULL), _initialized(false)
-    {
-        // We delay-load the bootstrap DLL so the exe still launches if it's missing.
-        _module = LoadLibraryEx(TEXT("Microsoft.WindowsAppRuntime.Bootstrap.dll"),
-                                NULL, LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-        if (!_module)
-            _module = LoadLibrary(TEXT("Microsoft.WindowsAppRuntime.Bootstrap.dll"));
-
-        if (!_module) {
-            LOGA("WinAppSDK bootstrap DLL not found, WinUI 3 features disabled\n");
-            return;
-        }
-
-        PFN_MddBootstrapInitialize2 pInit =
-            (PFN_MddBootstrapInitialize2)GetProcAddress(_module, "MddBootstrapInitialize2");
-        if (!pInit) {
-            LOGA("MddBootstrapInitialize2 not exported, WinUI 3 features disabled\n");
-            FreeLibrary(_module);
-            _module = NULL;
-            return;
-        }
-
-        // Match the Windows App SDK NuGet package version pinned in packages.config.
-        const UINT32 majorMinorVersion = 0x00010006;       // 1.6
-        PCWSTR       versionTag        = L"";              // stable channel
-        PACKAGE_VERSION minVersion     = {};               // any patch revision
-        const INT32  options           = 0;                // MddBootstrapInitializeOptions::None
-
-        HRESULT hr = pInit(majorMinorVersion, versionTag, minVersion, options);
-        if (SUCCEEDED(hr)) {
-            _initialized = true;
-            g_Globals._winui3_available = true;
-            g_winui3_available_flag = true;
-            LOGA("WinAppSDK bootstrap initialized\n");
-        } else {
-            char buf[128];
-            wsprintfA(buf, "MddBootstrapInitialize2 failed: 0x%08X, WinUI 3 disabled\n", (unsigned)hr);
-            LOGA(buf);
-        }
-    }
-
-    ~WinAppSdkSession()
-    {
-        // Tear down WinUI 3 surfaces before closing the bootstrapper.
-        // Order matters: WinUIStartMenu uses WinUIHost, which uses the
-        // dispatcher/Application that the bootstrap DLL provides.
-        WinUIStartMenu_Shutdown();
-        winui::WinUIHost::Shutdown();
-
-        if (_initialized && _module) {
-            PFN_MddBootstrapShutdown pShutdown =
-                (PFN_MddBootstrapShutdown)GetProcAddress(_module, "MddBootstrapShutdown");
-            if (pShutdown)
-                pShutdown();
-        }
-        if (_module)
-            FreeLibrary(_module);
-
-        g_Globals._winui3_available = false;
-        g_winui3_available_flag = false;
-    }
-
-    HMODULE _module;
-    bool    _initialized;
-};
-#endif // USE_WINUI3
-
 int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nShowCmd)
 {
     CONTEXT("WinMain()");
-
-    GdiplusSession gdiplus_session;
-#ifdef USE_WINUI3
-    WinAppSdkSession winappsdk_session;
-#endif
 
     BOOL any_desktop_running = IsAnyDesktopRunning();
 
@@ -508,7 +406,7 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
             "\r\n"
             "-desktop        start in desktop mode regardless of an already running shell\r\n"
             "\r\n"
-            "-install        replace previous shell application with Explauncher\r\n"
+            "-install        replace previous shell application with WinXShell\r\n"
             "\r\n"
             "-noautostart    disable autostarts\r\n"
             "-autostart    enable autostarts regardless of debug build\r\n"
@@ -516,12 +414,11 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
             "-console        open debug console\r\n"
             "\r\n"
             "-break        activate debugger breakpoint\r\n",
-            "Explauncher - command line options", MB_OK);
+            "WinXShell - command line options", MB_OK);
         return 0;
     }
 
 #ifdef _DEBUG
-    SetEnvironmentVariable(TEXT("EXPLAUNCHER_DEBUG"), TEXT("1"));
     SetEnvironmentVariable(TEXT("WINXSHELL_DEBUG"), TEXT("1"));
 #endif
 
@@ -555,7 +452,7 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
         }
 
         handle_console(g_Globals._log);
-        LOGA("starting explauncher console log\n");
+        LOGA("starting winxshell console log\n");
     }
 
     if (_tcsstr(ext_options, TEXT("-winpe"))) {
@@ -570,9 +467,9 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
         any_desktop_running = FALSE;
     }
 
-    // command line option "-install" to replace previous shell application with Explauncher
+    // command line option "-install" to replace previous shell application with WinXShell
     if (_tcsstr(ext_options, TEXT("-install"))) {
-        // install Explauncher into the registry
+        // install WinXShell into the registry
         TCHAR path[MAX_PATH];
 
         int l = GetModuleFileName(0, path, COUNTOF(path));
@@ -627,7 +524,6 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
     g_Globals.ReadPersistent();
 
     String mpath = JVAR("JVAR_MODULEPATH").ToString();
-    SetEnvironmentVariable(TEXT("EXPLAUNCHER_MODULEPATH"), mpath);
     SetEnvironmentVariable(TEXT("WINXSHELL_MODULEPATH"), mpath);
 
     // for loading UI Resources, lua_helper
@@ -693,8 +589,16 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
         autostart = true;
 
     if (startup_desktop) {
-        if (!SetShellReadyEvent(TEXT("ShellDesktopSwitchEvent")))
-            SetShellReadyEvent(TEXT("Global\\ShellDesktopSwitchEvent"));
+        if (IsWindowsVistaOrGreater()) {
+            // for Vista later
+            if (!SetShellReadyEvent(TEXT("ShellDesktopSwitchEvent")))
+                SetShellReadyEvent(TEXT("Global\\ShellDesktopSwitchEvent"));
+        } else {
+            // hide the XP login screen (Credit to Nicolas Escuder)
+            // another undocumented event: "Global\\msgina: ReturnToWelcome"
+            if (!SetShellReadyEvent(TEXT("msgina: ShellReadyEvent")))
+                SetShellReadyEvent(TEXT("Global\\msgina: ShellReadyEvent"));
+        }
     }
 #ifdef ROSSHELL
     else

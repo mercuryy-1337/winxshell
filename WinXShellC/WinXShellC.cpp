@@ -8,23 +8,15 @@ int StartWinXShellProcess(int argc, TCHAR *argv[]) {
     TCHAR appname[MAX_PATH] = { 0 };
     LPTSTR cmdline = _tcsdup(GetCommandLine());
     LPTSTR args = NULL;
-    int helper_name_length = 0;
     _tcsncpy_s(appname, cmdline, MAX_PATH); /* lower appname */
     _tcslwr_s(appname, MAX_PATH);
     args = _tcsstr(appname, TEXT("winxshellc.exe"));
     if (args != NULL) {
-        helper_name_length = (int)_tcslen(TEXT("winxshellc.exe"));
-    } else {
-        args = _tcsstr(appname, TEXT("explauncherc.exe"));
-        if (args != NULL)
-            helper_name_length = (int)_tcslen(TEXT("explauncherc.exe"));
-    }
-    if (args != NULL) {
         args = cmdline + int(args - appname);
         ZeroMemory(appname, MAX_PATH);
         _tcsncpy_s(appname, cmdline, args - cmdline);
-        _tcscat_s(appname, TEXT("Explauncher.exe"));
-        args += helper_name_length;
+        _tcscat_s(appname, TEXT("WinXShell.exe"));
+        args += 14;
         if (args[0] == TEXT('\"')) {
             args++;
             _tcscat_s(appname, TEXT("\""));
@@ -76,8 +68,7 @@ int _tmain(int argc, TCHAR *argv[])
     TCHAR szBuff[MAX_PATH*2] = TEXT("");
     TCHAR szTempFileName[MAX_PATH] = { 0 };
     GetTempPath(MAX_PATH, szBuff);
-    _stprintf_s(szTempFileName, TEXT("%sExplauncherC.%d.log"), szBuff, GetCurrentProcessId());
-    SetEnvironmentVariable(TEXT("EXPLAUNCHER_STDOUT"), szTempFileName);
+    _stprintf_s(szTempFileName, TEXT("%sWinXShellC.%d.log"), szBuff, GetCurrentProcessId());
     SetEnvironmentVariable(TEXT("WINXSHELL_STDOUT"), szTempFileName);
     if (StartWinXShellProcess(argc, argv) == 1) return 1;
     CatPipeFile(szTempFileName);

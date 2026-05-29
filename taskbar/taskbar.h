@@ -44,24 +44,6 @@
 
 
 #define PM_GET_LAST_ACTIVE  (WM_APP+0x1D)
-#define PM_QUERY_GROUP_STATE (WM_APP+0x1E)
-#define PM_TASKBAR_COMMIT_PENDING_ADDS (WM_APP+0x1F)
-
-
-struct TaskbarGroupStateQuery {
-    LPCTSTR _app_key;
-    HWND    _primary_hwnd;
-    int     _window_count;
-    BOOL    _active;
-    HWND   *_windows;
-    int     _window_capacity;
-};
-
-enum TaskbarLaunchKind {
-    TASKBAR_LAUNCH_NONE = 0,
-    TASKBAR_LAUNCH_SHORTCUT,
-    TASKBAR_LAUNCH_EXPLORER,
-};
 
 
 /// internal task bar button management entry
@@ -75,25 +57,10 @@ struct TaskBarEntry {
     int     _btn_idx;
     String  _title;
     BYTE    _fsState;
-    float   _hover_progress;
-    float   _active_progress;
-    float   _icon_visibility;
-    DWORD   _pid;
-    int     _window_group_count;
-    HWND    _primary_hwnd;
-    String  _app_key;
-    String  _pin_title;
-    String  _launch_path;
-    TaskbarLaunchKind _launch_kind;
-    bool    _pinned;
-    bool    _icon_animating_in;
-    bool    _icon_animating_out;
-    bool    _pending_remove;
-    vector<HWND> _windows;
 };
 
 /// map for managing the task bar buttons, mapped by application window handle
-struct TaskBarMap : public map<String, TaskBarEntry> {
+struct TaskBarMap : public map<HWND, TaskBarEntry> {
     ~TaskBarMap();
 
     iterator find_id(int id);
@@ -111,7 +78,6 @@ struct TaskBar : public Window {
 
 protected:
     WindowHandle _htoolbar;
-    HIMAGELIST  _himl;
     TaskBarMap  _map;
     int         _next_id;
     WindowHandle _last_foreground_wnd;
@@ -121,18 +87,6 @@ protected:
     static RECT _icon_area;
     bool        _no_task_title;
     bool        _task_close_button;
-    bool        _rounded_highlight;
-    bool        _centered_layout;
-    bool        _animate_highlights;
-    bool        _animation_timer_running;
-    double      _last_animation_clock_ms;
-    int         _preferred_btn_width;
-    int         _pending_reserved_button_count;
-    bool        _pending_add_commit;
-    bool        _committing_pending_adds;
-    set<String> _pinned_app_keys;
-    map<String, String> _pinned_aliases;
-    vector<String> _visible_order;
     const UINT WM_SHELLHOOK;
 
     void InitTaskbarStyle();
@@ -147,20 +101,6 @@ protected:
     static BOOL CALLBACK EnumWndProc(HWND hwnd, LPARAM lparam);
 
     void    ApplyBackgroundStyle();
-    void    LoadPinnedEntries();
-    void    LaunchEntry(TaskBarMap::iterator it);
-    String  ResolvePinnedLaunchAppKey(LPCTSTR process_path) const;
-    void    MergePinnedProcessMatches();
-    HBITMAP CreateEntryBitmap(const TaskBarEntry &entry);
     void    Refresh();
     void    ResizeButtons();
-    int     GetPreferredWidth() const;
-    bool    HasRunningButtons() const;
-    bool    IsAnimationRequired() const;
-    bool    AdvanceAnimations();
-    void    InvalidateAnimatedButtons(bool fallback_to_full = false);
-    void    RefreshAnimationTimer(bool invalidate = true);
-    void    SyncAnimationState(bool snap_to_target);
-    void    ClearPendingAddReservation();
-    bool    GetVisualButtonRect(const TaskBarEntry &entry, RECT *item_rect) const;
 };

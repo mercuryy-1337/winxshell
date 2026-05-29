@@ -80,7 +80,6 @@ extern struct ExplorerGlobals {
     void    getLuaAppEngine();
     void    getUIFolder();
     void    loadConfig();
-    String  getConfigOverridePath() const;
 
     HINSTANCE   _hInstance;
     UINT        _cfStrFName;
@@ -92,7 +91,6 @@ extern struct ExplorerGlobals {
     BOOL        _isShell;
     BOOL        _isWinPE;
     BOOL        _isNT5;
-    bool        _winui3_available;  // true once MddBootstrapInitialize succeeded
     String      _langID;
     String      _locale;
 

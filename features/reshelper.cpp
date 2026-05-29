@@ -1,6 +1,5 @@
 
 #include <shlwapi.h>
-#include <gdiplus.h>
 #include "reshelper.h"
 #include "../resource.h"
 #include "../globals.h"
@@ -53,8 +52,22 @@ void Icon::draw(HDC hdc, int x, int y, int cx, int cy, COLORREF bk_color, HBRUSH
 
 HBITMAP    Icon::create_bitmap(COLORREF bk_color, HBRUSH hbrBkgnd, HDC hdc_wnd, int icon_size) const
 {
-    RECT rect = { 0, 0, icon_size, icon_size };
-    return create_bitmap(bk_color, hbrBkgnd, hdc_wnd, icon_size, rect);
+    if (_itype == IT_SYSCACHE) {
+        HIMAGELIST himl = g_Globals._icon_cache.get_sys_imagelist();
+
+        int cx, cy;
+        ImageList_GetIconSize(himl, &cx, &cy);
+
+        HBITMAP hbmp = CreateCompatibleBitmap(hdc_wnd, cx, cy);
+        HDC hdc = CreateCompatibleDC(hdc_wnd);
+        HBITMAP hbmp_old = SelectBitmap(hdc, hbmp);
+        ImageList_DrawEx(himl, _sys_idx, hdc, 0, 0, cx, cy, bk_color, CLR_DEFAULT, ILD_NORMAL);
+        SelectBitmap(hdc, hbmp_old);
+        DeleteDC(hdc);
+
+        return hbmp;
+    } else
+        return create_bitmap_from_icon(_hicon, hbrBkgnd, hdc_wnd, icon_size);
 }
 
 HBITMAP    Icon::create_bitmap(COLORREF bk_color, HBRUSH hbrBkgnd, HDC hdc_wnd, int icon_size, RECT rect) const
@@ -62,12 +75,19 @@ HBITMAP    Icon::create_bitmap(COLORREF bk_color, HBRUSH hbrBkgnd, HDC hdc_wnd, 
     if (_itype == IT_SYSCACHE) {
         HIMAGELIST himl = g_Globals._icon_cache.get_sys_imagelist();
 
-        HICON hIcon = ImageList_GetIcon(himl, _sys_idx, ILD_NORMAL);
-        if (!hIcon)
-            return 0;
+        int cx, cy;
+        ImageList_GetIconSize(himl, &cx, &cy);
 
-        HBITMAP hbmp = create_bitmap_from_icon(hIcon, hbrBkgnd, hdc_wnd, icon_size, rect);
-        DestroyIcon(hIcon);
+        int w = rect.right;
+        int h = rect.bottom;
+
+        HBITMAP hbmp = CreateCompatibleBitmap(hdc_wnd, w, h);
+        HDC hdc = CreateCompatibleDC(hdc_wnd);
+        HBITMAP hbmp_old = SelectBitmap(hdc, hbmp);
+        ImageList_DrawEx(himl, _sys_idx, hdc, (w - cx) / 2 + rect.left, (h - cy) / 2 + rect.top, cx, cy, bk_color, CLR_DEFAULT, ILD_NORMAL);
+        SelectBitmap(hdc, hbmp_old);
+        DeleteDC(hdc);
+
         return hbmp;
     } else
         return create_bitmap_from_icon(_hicon, hbrBkgnd, hdc_wnd, icon_size, rect);
@@ -99,84 +119,21 @@ int Icon::add_to_imagelist(HIMAGELIST himl, HDC hdc_wnd, COLORREF bk_color, HBRU
     return ret;
 }
 
-static bool GetIconContentBounds(HICON hIcon, Gdiplus::Bitmap **bitmap_out, Gdiplus::Rect *bounds_out)
-{
-    Gdiplus::Bitmap *source = Gdiplus::Bitmap::FromHICON(hIcon);
-    if (!source || source->GetLastStatus() != Gdiplus::Ok) {
-        delete source;
-        return false;
-    }
-
-    UINT width = source->GetWidth();
-    UINT height = source->GetHeight();
-    if (width == 0 || height == 0) {
-        delete source;
-        return false;
-    }
-
-    Gdiplus::Bitmap *raster = new Gdiplus::Bitmap(width, height, PixelFormat32bppARGB);
-    if (!raster || raster->GetLastStatus() != Gdiplus::Ok) {
-        delete raster;
-        delete source;
-        return false;
-    }
-
-    {
-        Gdiplus::Graphics graphics(raster);
-        graphics.Clear(Gdiplus::Color(0, 0, 0, 0));
-        graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
-        graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
-        graphics.DrawImage(source, 0, 0, width, height);
-    }
-    delete source;
-
-    Gdiplus::BitmapData data;
-    Gdiplus::Rect lock_rect(0, 0, width, height);
-    if (raster->LockBits(&lock_rect, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &data) != Gdiplus::Ok) {
-        delete raster;
-        return false;
-    }
-
-    int left = (int)width;
-    int top = (int)height;
-    int right = -1;
-    int bottom = -1;
-
-    for (UINT y = 0; y < height; ++y) {
-        const Gdiplus::ARGB *row = (const Gdiplus::ARGB *)((const BYTE *)data.Scan0 + y * data.Stride);
-        for (UINT x = 0; x < width; ++x) {
-            Gdiplus::ARGB pixel = row[x];
-            BYTE alpha = (BYTE)((pixel >> 24) & 0xFF);
-            if (alpha > 8 || (alpha == 0 && (pixel & 0x00FFFFFF) != 0)) {
-                if ((int)x < left)
-                    left = (int)x;
-                if ((int)x > right)
-                    right = (int)x;
-                if ((int)y < top)
-                    top = (int)y;
-                if ((int)y > bottom)
-                    bottom = (int)y;
-            }
-        }
-    }
-
-    raster->UnlockBits(&data);
-
-    if (right < left || bottom < top) {
-        delete raster;
-        return false;
-    }
-
-    *bounds_out = Gdiplus::Rect(left, top, right - left + 1, bottom - top + 1);
-    *bitmap_out = raster;
-    return true;
-}
-
 HBITMAP create_bitmap_from_icon(HICON hIcon, HBRUSH hbrush_bkgnd, HDC hdc_wnd, int icon_size)
 {
-    RECT rect = { 0, 0, icon_size, icon_size };
-    return create_bitmap_from_icon(hIcon, hbrush_bkgnd, hdc_wnd, icon_size, rect);
+    int cx = icon_size;
+    int cy = icon_size;
+    HBITMAP hbmp = CreateCompatibleBitmap(hdc_wnd, cx, cy);
+
+    MemCanvas canvas;
+    BitmapSelection sel(canvas, hbmp);
+
+    RECT rect = { 0, 0, cx, cy };
+    FillRect(canvas, &rect, hbrush_bkgnd);
+
+    DrawIconEx(canvas, 0, 0, hIcon, cx, cy, 0, hbrush_bkgnd, DI_NORMAL);
+
+    return hbmp;
 }
 
 HBITMAP create_small_bitmap_from_icon(HICON hIcon, HBRUSH hbrush_bkgnd, HDC hdc_wnd)
@@ -196,76 +153,10 @@ HBITMAP create_small_bitmap_from_icon(HICON hIcon, HBRUSH hbrush_bkgnd, HDC hdc_
     return hbmp;
 }
 
-static HBITMAP CreateAlphaBitmap(int width, int height, void **bits_out)
-{
-    if (bits_out)
-        *bits_out = NULL;
-
-    if (width <= 0 || height <= 0)
-        return 0;
-
-    BITMAPINFO bmi = { 0 };
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = width;
-    bmi.bmiHeader.biHeight = -height;
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-
-    return CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, bits_out, NULL, 0);
-}
-
 HBITMAP create_bitmap_from_icon(HICON hIcon, HBRUSH hbrush_bkgnd, HDC hdc_wnd, int icon_size, RECT rect)
 {
     int w = rect.right;
     int h = rect.bottom;
-
-    int draw_width = icon_size;
-    int draw_height = icon_size;
-    if (draw_width > w)
-        draw_width = w;
-    if (draw_height > h)
-        draw_height = h;
-
-    int draw_x = rect.left + (w - draw_width) / 2;
-    int draw_y = rect.top + (h - draw_height) / 2;
-
-    Gdiplus::Bitmap *icon_bitmap = NULL;
-    Gdiplus::Rect content_bounds;
-
-    if (!hbrush_bkgnd) {
-        void *dib_bits = NULL;
-        HBITMAP hbmp = CreateAlphaBitmap(w, h, &dib_bits);
-        if (!hbmp || !dib_bits) {
-            if (hbmp)
-                DeleteObject(hbmp);
-            return 0;
-        }
-
-        ZeroMemory(dib_bits, (size_t)w * (size_t)h * 4);
-
-        MemCanvas canvas;
-        BitmapSelection sel(canvas, hbmp);
-
-        if (GetIconContentBounds(hIcon, &icon_bitmap, &content_bounds)) {
-            Gdiplus::Graphics graphics(canvas);
-            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-            graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
-            graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
-            graphics.DrawImage(icon_bitmap,
-                Gdiplus::Rect(draw_x, draw_y, draw_width, draw_height),
-                content_bounds.X,
-                content_bounds.Y,
-                content_bounds.Width,
-                content_bounds.Height,
-                Gdiplus::UnitPixel);
-            delete icon_bitmap;
-        } else {
-            DrawIconEx(canvas, draw_x, draw_y, hIcon, draw_width, draw_height, 0, NULL, DI_NORMAL);
-        }
-
-        return hbmp;
-    }
 
     HBITMAP hbmp = CreateCompatibleBitmap(hdc_wnd, w, h);
 
@@ -275,151 +166,10 @@ HBITMAP create_bitmap_from_icon(HICON hIcon, HBRUSH hbrush_bkgnd, HDC hdc_wnd, i
     RECT rect2 = { 0, 0, w, h };
     FillRect(canvas, &rect2, hbrush_bkgnd);
 
-    if (GetIconContentBounds(hIcon, &icon_bitmap, &content_bounds)) {
-        Gdiplus::Graphics graphics(canvas);
-        graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
-        graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
-        graphics.DrawImage(icon_bitmap,
-            Gdiplus::Rect(draw_x, draw_y, draw_width, draw_height),
-            content_bounds.X,
-            content_bounds.Y,
-            content_bounds.Width,
-            content_bounds.Height,
-            Gdiplus::UnitPixel);
-        delete icon_bitmap;
-    } else {
-        DrawIconEx(canvas, draw_x, draw_y, hIcon, draw_width, draw_height, 0, hbrush_bkgnd, DI_NORMAL);
-    }
+    DrawIconEx(canvas, (w - icon_size) / 2 + rect.left, (h - icon_size) / 2 + rect.top,
+        hIcon, icon_size, icon_size, 0, hbrush_bkgnd, DI_NORMAL);
 
     return hbmp;
-}
-
-BOOL draw_icon_high_quality(HDC hdc, HICON hIcon, const RECT &rect, BYTE alpha)
-{
-    if (!hdc || !hIcon)
-        return FALSE;
-
-    int width = rect.right - rect.left;
-    int height = rect.bottom - rect.top;
-    if (width <= 0 || height <= 0)
-        return FALSE;
-
-    Gdiplus::Bitmap *icon_bitmap = NULL;
-    Gdiplus::Rect content_bounds;
-    if (GetIconContentBounds(hIcon, &icon_bitmap, &content_bounds)) {
-        Gdiplus::ImageAttributes image_attributes;
-        bool use_alpha = alpha < 255;
-        if (use_alpha) {
-            Gdiplus::ColorMatrix color_matrix = {
-                1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-                0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
-                0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
-                0.0f, 0.0f, 0.0f, (Gdiplus::REAL)alpha / 255.0f, 0.0f,
-                0.0f, 0.0f, 0.0f, 0.0f, 1.0f
-            };
-            image_attributes.SetColorMatrix(&color_matrix, Gdiplus::ColorMatrixFlagsDefault, Gdiplus::ColorAdjustTypeBitmap);
-        }
-
-        int draw_width = width;
-        int draw_height = height;
-        if (content_bounds.Width > 0 && content_bounds.Height > 0) {
-            if ((long long)content_bounds.Width * draw_height > (long long)content_bounds.Height * draw_width) {
-                draw_height = max(1, MulDiv(draw_width, content_bounds.Height, content_bounds.Width));
-            } else {
-                draw_width = max(1, MulDiv(draw_height, content_bounds.Width, content_bounds.Height));
-            }
-        }
-
-        int draw_x = rect.left + (width - draw_width) / 2;
-        int draw_y = rect.top + (height - draw_height) / 2;
-
-        int sample_scale = 2;
-        int sampled_width = max(1, draw_width * sample_scale);
-        int sampled_height = max(1, draw_height * sample_scale);
-        Gdiplus::Bitmap sampled(sampled_width, sampled_height, PixelFormat32bppPARGB);
-        if (sampled.GetLastStatus() == Gdiplus::Ok) {
-            Gdiplus::Graphics sampled_graphics(&sampled);
-            sampled_graphics.Clear(Gdiplus::Color(0, 0, 0, 0));
-            sampled_graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-            sampled_graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
-            sampled_graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
-            sampled_graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
-            sampled_graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
-            sampled_graphics.DrawImage(icon_bitmap,
-                Gdiplus::Rect(0, 0, sampled_width, sampled_height),
-                content_bounds.X,
-                content_bounds.Y,
-                content_bounds.Width,
-                content_bounds.Height,
-                Gdiplus::UnitPixel,
-                use_alpha ? &image_attributes : NULL);
-
-            Gdiplus::Graphics graphics(hdc);
-            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-            graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
-            graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
-            graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
-            graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
-            graphics.DrawImage(&sampled,
-                Gdiplus::Rect(draw_x, draw_y, draw_width, draw_height),
-                0,
-                0,
-                sampled_width,
-                sampled_height,
-                Gdiplus::UnitPixel,
-                use_alpha ? &image_attributes : NULL);
-        } else {
-            Gdiplus::Graphics graphics(hdc);
-            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-            graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
-            graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
-            graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
-            graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
-            graphics.DrawImage(icon_bitmap,
-                Gdiplus::Rect(draw_x, draw_y, draw_width, draw_height),
-                content_bounds.X,
-                content_bounds.Y,
-                content_bounds.Width,
-                content_bounds.Height,
-                Gdiplus::UnitPixel,
-                use_alpha ? &image_attributes : NULL);
-        }
-        delete icon_bitmap;
-        return TRUE;
-    }
-
-    SIZE icon_size = { width, height };
-    ICONINFO icon_info = { 0 };
-    if (GetIconInfo(hIcon, &icon_info)) {
-        BITMAP bmp = { 0 };
-        if (icon_info.hbmColor && GetObject(icon_info.hbmColor, sizeof(bmp), &bmp) == sizeof(BITMAP)) {
-            icon_size.cx = bmp.bmWidth;
-            icon_size.cy = bmp.bmHeight;
-        } else if (icon_info.hbmMask && GetObject(icon_info.hbmMask, sizeof(bmp), &bmp) == sizeof(BITMAP)) {
-            icon_size.cx = bmp.bmWidth;
-            icon_size.cy = bmp.bmHeight / 2;
-        }
-
-        if (icon_info.hbmColor)
-            DeleteObject(icon_info.hbmColor);
-        if (icon_info.hbmMask)
-            DeleteObject(icon_info.hbmMask);
-    }
-
-    int draw_width = width;
-    int draw_height = height;
-    if (icon_size.cx > 0 && icon_size.cy > 0) {
-        if ((long long)icon_size.cx * draw_height > (long long)icon_size.cy * draw_width) {
-            draw_height = max(1, MulDiv(draw_width, icon_size.cy, icon_size.cx));
-        } else {
-            draw_width = max(1, MulDiv(draw_height, icon_size.cx, icon_size.cy));
-        }
-    }
-
-    int draw_x = rect.left + (width - draw_width) / 2;
-    int draw_y = rect.top + (height - draw_height) / 2;
-    return DrawIconEx(hdc, draw_x, draw_y, hIcon, draw_width, draw_height, 0, NULL, DI_NORMAL);
 }
 
 

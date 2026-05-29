@@ -211,11 +211,11 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "CompanyName", "FreeMan"
-            VALUE "FileDescription", "Windows Explauncher"
-            VALUE "InternalName", "Explauncher"
-            VALUE "LegalCopyright", PRODUCT_COPYRIGHT_STR
-            VALUE "OriginalFilename", "Explauncher.exe"
-            VALUE "ProductName", "EXPLAUNCHER.EXE"
+            VALUE "FileDescription", "Windows WinXShell"
+            VALUE "InternalName", "WinXShell"
+            VALUE "LegalCopyright", "(c) FreeMan. All rights reserved."
+            VALUE "OriginalFilename", "WinXShell.exe"
+            VALUE "ProductName", "WINXSHELL.EXE"
             VALUE "ProductVersion", PRODUCT_VERSION_STR
         END
     END
@@ -244,14 +244,14 @@ STRINGTABLE DISCARDABLE
 BEGIN
 IDS_VERSION_STR PRODUCT_VERSION_STR
 #ifdef UNICODE
-IDS_EXPLORER_VERSION_STR "Explauncher %0s"
+IDS_EXPLORER_VERSION_STR "WinXShell %0s"
 #else
-IDS_EXPLORER_VERSION_STR "Explauncher Ansi %0s"
+IDS_EXPLORER_VERSION_STR "WinXShell Ansi %0s"
 #endif
 IDS_COPYRIGHT_STR PRODUCT_COPYRIGHT_STR
 END
 #ifndef _DEBUG
-CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST DISCARDABLE PURE "Explauncher.exe.manifest"
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST DISCARDABLE PURE "WinXShell.exe.manifest"
 #endif
 
 #ifdef LANGUAGE_EN_US

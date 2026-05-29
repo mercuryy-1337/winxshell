@@ -33,8 +33,6 @@
 #include <time.h>
 #include <sstream>
 
-DWORD PASCAL ReadKernelVersion(DWORD *wdVers);
-
 
 DWORD WINAPI Thread::ThreadProc(void *para)
 {
@@ -63,7 +61,7 @@ void CenterWindow(HWND hwnd)
     if (owner)
         GetWindowRect(owner, &prt);
     else
-        SystemParametersInfo(SPI_GETWORKAREA, 0, &prt, 0);  //@@ GetDesktopWindow() wï¿½re auch hilfreich.
+        SystemParametersInfo(SPI_GETWORKAREA, 0, &prt, 0);  //@@ GetDesktopWindow() wäre auch hilfreich.
 
     SetWindowPos(hwnd, 0, (prt.left + prt.right + rt.left - rt.right) / 2,
                  (prt.top + prt.bottom + rt.top - rt.bottom) / 2, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER);
@@ -188,390 +186,18 @@ BOOL time_to_filetime(const time_t *t, FILETIME *ftime)
 }
 
 
-static BOOL launch_file_shell_execute(HWND hwnd, LPCTSTR cmd, UINT nCmdShow, LPCTSTR parameters)
+BOOL launch_file(HWND hwnd, LPCTSTR cmd, UINT nCmdShow, LPCTSTR parameters)
 {
+    CONTEXT("launch_file()");
+
     HINSTANCE hinst = ShellExecute(hwnd, NULL/*operation*/, cmd, parameters, NULL/*dir*/, nCmdShow);
 
-    if ((INT_PTR)hinst <= 32) {
+    if ((int)hinst <= 32) {
         display_error(hwnd, GetLastError());
         return FALSE;
     }
 
     return TRUE;
-}
-
-static bool IsPeaZipArchivePath(LPCTSTR path)
-{
-    return path && *path && PathMatchSpec(path,
-        TEXT("*.zip;*.7z;*.rar;*.tar;*.gz;*.tgz;*.bz2;*.tbz;*.xz;*.txz;*.cab;*.iso"));
-}
-
-static bool TryGetModuleDirectory(TCHAR *module_path, size_t path_count)
-{
-    if (!module_path || !path_count)
-        return false;
-
-    module_path[0] = TEXT('\0');
-
-    String configured_module_path = JVAR("JVAR_MODULEPATH").ToString();
-    if (!configured_module_path.empty()) {
-        lstrcpyn(module_path, configured_module_path.c_str(), (int)path_count);
-        return true;
-    }
-
-    if (!GetModuleFileName(NULL, module_path, (DWORD)path_count) || !module_path[0])
-        return false;
-
-    PathRemoveFileSpec(module_path);
-    return module_path[0] != TEXT('\0');
-}
-
-BOOL TryGetPeaZipPath(PTSTR peazip_path, size_t path_count)
-{
-    if (!peazip_path || !path_count)
-        return FALSE;
-
-    peazip_path[0] = TEXT('\0');
-
-    TCHAR module_path[MAX_PATH] = { 0 };
-    if (!TryGetModuleDirectory(module_path, COUNTOF(module_path)))
-        return FALSE;
-
-    TCHAR candidate[MAX_PATH] = { 0 };
-    if (!PathCombine(candidate, module_path, TEXT("..\\Explorer\\peazip.exe")))
-        return FALSE;
-
-    TCHAR canonical[MAX_PATH] = { 0 };
-    LPCTSTR resolved = candidate;
-    if (PathCanonicalize(canonical, candidate))
-        resolved = canonical;
-
-    if (!PathFileExists(resolved))
-        return FALSE;
-
-    lstrcpyn(peazip_path, resolved, (int)path_count);
-    return TRUE;
-}
-
-static bool SetRegistryStringValue(HKEY root, LPCTSTR subkey, LPCTSTR value_name, LPCTSTR value_data)
-{
-    if (!subkey || !*subkey || !value_data)
-        return false;
-
-    HKEY hkey = NULL;
-    LONG status = RegCreateKeyEx(root,
-        subkey,
-        0,
-        NULL,
-        REG_OPTION_NON_VOLATILE,
-        KEY_SET_VALUE,
-        NULL,
-        &hkey,
-        NULL);
-    if (status != ERROR_SUCCESS)
-        return false;
-
-    status = RegSetValueEx(hkey,
-        value_name,
-        0,
-        REG_SZ,
-        (const BYTE *)value_data,
-        (DWORD)((_tcslen(value_data) + 1) * sizeof(TCHAR)));
-    RegCloseKey(hkey);
-    return status == ERROR_SUCCESS;
-}
-
-static bool SetRegistryNoneValue(HKEY root, LPCTSTR subkey, LPCTSTR value_name)
-{
-    if (!subkey || !*subkey)
-        return false;
-
-    HKEY hkey = NULL;
-    LONG status = RegCreateKeyEx(root,
-        subkey,
-        0,
-        NULL,
-        REG_OPTION_NON_VOLATILE,
-        KEY_SET_VALUE,
-        NULL,
-        &hkey,
-        NULL);
-    if (status != ERROR_SUCCESS)
-        return false;
-
-    status = RegSetValueEx(hkey, value_name, 0, REG_NONE, NULL, 0);
-    RegCloseKey(hkey);
-    return status == ERROR_SUCCESS;
-}
-
-static bool QueryRegistryStringValue(HKEY root, LPCTSTR subkey, LPCTSTR value_name, PTSTR value_data, DWORD value_count)
-{
-    if (!subkey || !*subkey || !value_data || value_count == 0)
-        return false;
-
-    value_data[0] = TEXT('\0');
-
-    HKEY hkey = NULL;
-    LONG status = RegOpenKeyEx(root, subkey, 0, KEY_QUERY_VALUE, &hkey);
-    if (status != ERROR_SUCCESS)
-        return false;
-
-    DWORD type = REG_NONE;
-    DWORD byte_count = value_count * sizeof(TCHAR);
-    status = RegQueryValueEx(hkey, value_name, 0, &type, (LPBYTE)value_data, &byte_count);
-    RegCloseKey(hkey);
-
-    if (status != ERROR_SUCCESS)
-        return false;
-
-    if (type != REG_SZ && type != REG_EXPAND_SZ)
-        return false;
-
-    value_data[value_count - 1] = TEXT('\0');
-    return value_data[0] != TEXT('\0');
-}
-
-static bool DeleteRegistryTreeIfPresent(HKEY root, LPCTSTR subkey)
-{
-    if (!subkey || !*subkey)
-        return false;
-
-    LONG status = SHDeleteKey(root, subkey);
-    return status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND;
-}
-
-static bool DeleteRegistryTreeBestEffort(HKEY root, LPCTSTR subkey)
-{
-    if (!subkey || !*subkey)
-        return false;
-
-    LONG status = SHDeleteKey(root, subkey);
-    return status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND || status == ERROR_ACCESS_DENIED;
-}
-
-static bool ConfigureExplorerOpenWithForExtension(LPCTSTR extension, LPCTSTR progid, LPCTSTR app_name)
-{
-    if (!extension || !*extension || !progid || !*progid || !app_name || !*app_name)
-        return false;
-
-    String base_key = FmtString(TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\%s"), extension);
-    String open_with_progids_key = base_key + TEXT("\\OpenWithProgids");
-    String open_with_list_key = base_key + TEXT("\\OpenWithList");
-
-    bool success = true;
-    success = success && SetRegistryNoneValue(HKEY_CURRENT_USER, open_with_progids_key.c_str(), progid);
-    success = success && SetRegistryStringValue(HKEY_CURRENT_USER, open_with_list_key.c_str(), TEXT("a"), app_name);
-    success = success && SetRegistryStringValue(HKEY_CURRENT_USER, open_with_list_key.c_str(), TEXT("MRUList"), TEXT("a"));
-
-    // Best effort: if UserChoice is removable, fallback resolution can use our per-user class mapping.
-    String user_choice_key = base_key + TEXT("\\UserChoice");
-    success = success && DeleteRegistryTreeBestEffort(HKEY_CURRENT_USER, user_choice_key.c_str());
-    return success;
-}
-
-static bool ClearExplorerAssociationStateForExtension(LPCTSTR extension)
-{
-    if (!extension || !*extension)
-        return false;
-
-    String base_key = FmtString(TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\%s"), extension);
-    bool success = true;
-    success = success && DeleteRegistryTreeBestEffort(HKEY_CURRENT_USER, (base_key + TEXT("\\UserChoice")).c_str());
-    success = success && DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, (base_key + TEXT("\\OpenWithProgids")).c_str());
-    success = success && DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, (base_key + TEXT("\\OpenWithList")).c_str());
-    return success;
-}
-
-static bool CommandReferencesExecutable(LPCTSTR command, LPCTSTR executable_path)
-{
-    if (!command || !*command || !executable_path || !*executable_path)
-        return false;
-
-    return StrStrI(command, executable_path) != NULL;
-}
-
-BOOL IsPeaZipDefaultArchiveAssociation()
-{
-    static const TCHAR *kZipExtKey = TEXT("Software\\Classes\\.zip");
-    static const TCHAR *kRarExtKey = TEXT("Software\\Classes\\.rar");
-    static const TCHAR *kZipProgId = TEXT("PeaZip.zip");
-    static const TCHAR *kRarProgId = TEXT("PeaZip.rar");
-    static const TCHAR *kZipCommandKey = TEXT("Software\\Classes\\PeaZip.zip\\shell\\open\\command");
-    static const TCHAR *kRarCommandKey = TEXT("Software\\Classes\\PeaZip.rar\\shell\\open\\command");
-    static const TCHAR *kZipUserChoiceKey = TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.zip\\UserChoice");
-    static const TCHAR *kRarUserChoiceKey = TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.rar\\UserChoice");
-
-    TCHAR peazip_path[MAX_PATH] = { 0 };
-    if (!TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path)))
-        return FALSE;
-
-    TCHAR zip_progid[128] = { 0 };
-    TCHAR rar_progid[128] = { 0 };
-    if (!QueryRegistryStringValue(HKEY_CURRENT_USER, kZipExtKey, NULL, zip_progid, COUNTOF(zip_progid)) ||
-        !QueryRegistryStringValue(HKEY_CURRENT_USER, kRarExtKey, NULL, rar_progid, COUNTOF(rar_progid))) {
-        return FALSE;
-    }
-
-    if (_tcsicmp(zip_progid, kZipProgId) != 0 || _tcsicmp(rar_progid, kRarProgId) != 0)
-        return FALSE;
-
-    TCHAR zip_command[MAX_PATH * 2] = { 0 };
-    TCHAR rar_command[MAX_PATH * 2] = { 0 };
-    if (!QueryRegistryStringValue(HKEY_CURRENT_USER, kZipCommandKey, NULL, zip_command, COUNTOF(zip_command)) ||
-        !QueryRegistryStringValue(HKEY_CURRENT_USER, kRarCommandKey, NULL, rar_command, COUNTOF(rar_command))) {
-        return FALSE;
-    }
-
-    if (!CommandReferencesExecutable(zip_command, peazip_path) || !CommandReferencesExecutable(rar_command, peazip_path))
-        return FALSE;
-
-    TCHAR zip_userchoice_progid[128] = { 0 };
-    if (QueryRegistryStringValue(HKEY_CURRENT_USER, kZipUserChoiceKey, TEXT("ProgId"), zip_userchoice_progid, COUNTOF(zip_userchoice_progid)) &&
-        _tcsicmp(zip_userchoice_progid, kZipProgId) != 0) {
-        return FALSE;
-    }
-
-    TCHAR rar_userchoice_progid[128] = { 0 };
-    if (QueryRegistryStringValue(HKEY_CURRENT_USER, kRarUserChoiceKey, TEXT("ProgId"), rar_userchoice_progid, COUNTOF(rar_userchoice_progid)) &&
-        _tcsicmp(rar_userchoice_progid, kRarProgId) != 0) {
-        return FALSE;
-    }
-
-    return TRUE;
-}
-
-BOOL SetPeaZipDefaultArchiveAssociation(BOOL enabled)
-{
-    static const TCHAR *kZipExtKey = TEXT("Software\\Classes\\.zip");
-    static const TCHAR *kRarExtKey = TEXT("Software\\Classes\\.rar");
-    static const TCHAR *kZipOpenWithProgidsKey = TEXT("Software\\Classes\\.zip\\OpenWithProgids");
-    static const TCHAR *kRarOpenWithProgidsKey = TEXT("Software\\Classes\\.rar\\OpenWithProgids");
-    static const TCHAR *kZipProgIdBaseKey = TEXT("Software\\Classes\\PeaZip.zip");
-    static const TCHAR *kRarProgIdBaseKey = TEXT("Software\\Classes\\PeaZip.rar");
-    static const TCHAR *kZipCommandKey = TEXT("Software\\Classes\\PeaZip.zip\\shell\\open\\command");
-    static const TCHAR *kRarCommandKey = TEXT("Software\\Classes\\PeaZip.rar\\shell\\open\\command");
-    static const TCHAR *kZipIconKey = TEXT("Software\\Classes\\PeaZip.zip\\DefaultIcon");
-    static const TCHAR *kRarIconKey = TEXT("Software\\Classes\\PeaZip.rar\\DefaultIcon");
-    static const TCHAR *kPeaZipAppBaseKey = TEXT("Software\\Classes\\Applications\\peazip.exe");
-    static const TCHAR *kPeaZipAppCommandKey = TEXT("Software\\Classes\\Applications\\peazip.exe\\shell\\open\\command");
-    static const TCHAR *kPeaZipSupportedTypesKey = TEXT("Software\\Classes\\Applications\\peazip.exe\\SupportedTypes");
-    static const TCHAR *kZipProgId = TEXT("PeaZip.zip");
-    static const TCHAR *kRarProgId = TEXT("PeaZip.rar");
-
-    bool success = true;
-
-    if (enabled) {
-        TCHAR peazip_path[MAX_PATH] = { 0 };
-        if (!TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path)))
-            return FALSE;
-
-        TCHAR open_command[MAX_PATH * 2] = { 0 };
-        _sntprintf(open_command, COUNTOF(open_command), TEXT("\"%s\" \"%%1\""), peazip_path);
-        open_command[COUNTOF(open_command) - 1] = TEXT('\0');
-
-        TCHAR icon_command[MAX_PATH * 2] = { 0 };
-        _sntprintf(icon_command, COUNTOF(icon_command), TEXT("\"%s\",0"), peazip_path);
-        icon_command[COUNTOF(icon_command) - 1] = TEXT('\0');
-
-        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kZipProgIdBaseKey, NULL, TEXT("ZIP Archive"));
-        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kRarProgIdBaseKey, NULL, TEXT("RAR Archive"));
-        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kZipCommandKey, NULL, open_command);
-        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kRarCommandKey, NULL, open_command);
-        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kZipIconKey, NULL, icon_command);
-        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kRarIconKey, NULL, icon_command);
-        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kZipExtKey, NULL, kZipProgId);
-        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kRarExtKey, NULL, kRarProgId);
-        success = success && SetRegistryNoneValue(HKEY_CURRENT_USER, kZipOpenWithProgidsKey, kZipProgId);
-        success = success && SetRegistryNoneValue(HKEY_CURRENT_USER, kRarOpenWithProgidsKey, kRarProgId);
-        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kPeaZipAppBaseKey, NULL, TEXT("PeaZip"));
-        success = success && SetRegistryStringValue(HKEY_CURRENT_USER, kPeaZipAppCommandKey, NULL, open_command);
-        success = success && SetRegistryNoneValue(HKEY_CURRENT_USER, kPeaZipSupportedTypesKey, TEXT(".zip"));
-        success = success && SetRegistryNoneValue(HKEY_CURRENT_USER, kPeaZipSupportedTypesKey, TEXT(".rar"));
-        success = success && ConfigureExplorerOpenWithForExtension(TEXT(".zip"), kZipProgId, TEXT("peazip.exe"));
-        success = success && ConfigureExplorerOpenWithForExtension(TEXT(".rar"), kRarProgId, TEXT("peazip.exe"));
-    } else {
-        success = success && ClearExplorerAssociationStateForExtension(TEXT(".zip"));
-        success = success && ClearExplorerAssociationStateForExtension(TEXT(".rar"));
-        success = success && DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, kZipExtKey);
-        success = success && DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, kRarExtKey);
-        success = success && DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, kZipProgIdBaseKey);
-        success = success && DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, kRarProgIdBaseKey);
-        success = success && DeleteRegistryTreeIfPresent(HKEY_CURRENT_USER, kPeaZipAppBaseKey);
-    }
-
-    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);
-    if (enabled && success && !IsPeaZipDefaultArchiveAssociation())
-        return FALSE;
-    return success ? TRUE : FALSE;
-}
-
-static bool TryGetPeaZipLaunchTarget(LPCTSTR cmd, LPCTSTR parameters, String &target_path)
-{
-    target_path.erase();
-
-    if (!cmd || !*cmd)
-        return false;
-
-    if (parameters && *parameters)
-        return false;
-
-    TCHAR expanded_cmd[MAX_PATH] = { 0 };
-    LPCTSTR resolved_cmd = cmd;
-    DWORD expanded_length = ExpandEnvironmentStrings(cmd, expanded_cmd, COUNTOF(expanded_cmd));
-    if (expanded_length > 0 && expanded_length < COUNTOF(expanded_cmd))
-        resolved_cmd = expanded_cmd;
-
-    TCHAR normalized_cmd[MAX_PATH] = { 0 };
-    lstrcpyn(normalized_cmd, resolved_cmd, COUNTOF(normalized_cmd));
-    PathUnquoteSpaces(normalized_cmd);
-
-    if (PathIsDirectory(normalized_cmd)) {
-        target_path = normalized_cmd;
-        return true;
-    }
-
-    if (PathFileExists(normalized_cmd) && IsPeaZipArchivePath(normalized_cmd)) {
-        target_path = normalized_cmd;
-        return true;
-    }
-
-    if (PathMatchSpec(normalized_cmd, TEXT("*.lnk"))) {
-        TCHAR shortcut_target[MAX_PATH] = { 0 };
-        GetShortcutPath(normalized_cmd, shortcut_target, COUNTOF(shortcut_target));
-        if (shortcut_target[0] && (PathIsDirectory(shortcut_target) ||
-            (PathFileExists(shortcut_target) && IsPeaZipArchivePath(shortcut_target)))) {
-            target_path = shortcut_target;
-            return true;
-        }
-    }
-
-    return false;
-}
-
-BOOL launch_folder_with_peazip(HWND hwnd, LPCTSTR folder_path, UINT nCmdShow)
-{
-    if (!folder_path || !*folder_path)
-        return FALSE;
-
-    TCHAR peazip_path[MAX_PATH] = { 0 };
-    if (TryGetPeaZipPath(peazip_path, COUNTOF(peazip_path))) {
-        String peazip_parameters = FmtString(TEXT("\"%s\""), folder_path);
-        return launch_file_shell_execute(hwnd, peazip_path, nCmdShow, peazip_parameters.c_str());
-    }
-
-    return launch_file_shell_execute(hwnd, folder_path, nCmdShow, NULL);
-}
-
-
-BOOL launch_file(HWND hwnd, LPCTSTR cmd, UINT nCmdShow, LPCTSTR parameters)
-{
-    CONTEXT("launch_file()");
-
-    String peazip_target;
-    if (TryGetPeaZipLaunchTarget(cmd, parameters, peazip_target))
-        return launch_folder_with_peazip(hwnd, peazip_target.c_str(), nCmdShow);
-
-    return launch_file_shell_execute(hwnd, cmd, nCmdShow, parameters);
 }
 
 #ifdef UNICODE
@@ -822,42 +448,104 @@ int find_window_class(LPCTSTR classname)
 
 String get_windows_version_str()
 {
-    DWORD wdVers[4] = {0};
-    ReadKernelVersion(wdVers);
-
-    DWORD major = wdVers[0];
-    DWORD minor = wdVers[1];
-    DWORD build = wdVers[2];
-
-    if (major == 0 && minor == 0)
-        return TEXT("???");
-
+    OSVERSIONINFOEX osvi = {sizeof(OSVERSIONINFOEX)};
+    BOOL osvie_val;
     String str;
-    if (major >= 10 && build >= 22000)
-        str = TEXT("Microsoft Windows 11");
-    else if (major >= 10)
-        str = TEXT("Microsoft Windows 10");
-    else if (major == 6 && minor == 3)
-        str = TEXT("Microsoft Windows 8.1");
-    else if (major == 6 && minor == 2)
-        str = TEXT("Microsoft Windows 8");
-    else if (major == 6 && minor == 1)
-        str = TEXT("Microsoft Windows 7");
-    else if (major == 6 && minor == 0)
-        str = TEXT("Microsoft Windows Vista");
-    else if (major == 5 && minor == 1)
-        str = TEXT("Microsoft Windows XP");
-    else
-        str = TEXT("Microsoft Windows");
+
+    if (!(osvie_val = GetVersionEx((OSVERSIONINFO *)&osvi))) {
+        osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
+
+        if (!GetVersionEx((OSVERSIONINFO *)&osvi))
+            return TEXT("???");
+    }
+
+    switch (osvi.dwPlatformId) {
+    case VER_PLATFORM_WIN32_NT:
+#ifdef __REACTOS__  // This work around can be removed if ReactOS gets a unique version number.
+        str = TEXT("ReactOS");
+#else
+        if (osvi.dwMajorVersion <= 4)
+            str = TEXT("Microsoft Windows NT");
+        else if (osvi.dwMajorVersion == 5 && osvi.dwMinorVersion == 0)
+            str = TEXT("Microsoft Windows 2000");
+        else if (osvi.dwMajorVersion == 5 && osvi.dwMinorVersion == 1)
+            str = TEXT("Microsoft Windows XP");
+#endif
+
+        if (osvie_val) {
+            if (osvi.wProductType == VER_NT_WORKSTATION) {
+                if (osvi.wSuiteMask & VER_SUITE_PERSONAL)
+                    str += TEXT(" Personal");
+                else
+                    str += TEXT(" Professional");
+            } else if (osvi.wProductType == VER_NT_SERVER) {
+                if (osvi.wSuiteMask & VER_SUITE_DATACENTER)
+                    str += TEXT(" DataCenter Server");
+                else if (osvi.wSuiteMask & VER_SUITE_ENTERPRISE)
+                    str += TEXT(" Advanced Server");
+                else
+                    str += TEXT(" Server");
+            } else if (osvi.wProductType == VER_NT_DOMAIN_CONTROLLER) {
+                str += TEXT(" Domain Controller");
+            }
+        } else {
+            TCHAR type[80];
+            DWORD dwBufLen;
+            HKEY hkey;
+
+            if (!RegOpenKeyEx(HKEY_LOCAL_MACHINE, TEXT("SYSTEM\\CurrentControlSet\\Control\\ProductOptions"), 0, KEY_QUERY_VALUE, &hkey)) {
+                RegQueryValueEx(hkey, TEXT("ProductType"), NULL, NULL, (LPBYTE)type, &dwBufLen);
+                RegCloseKey(hkey);
+
+                if (!_tcsicmp(TEXT("WINNT"), type))
+                    str += TEXT(" Workstation");
+                else if (!_tcsicmp(TEXT("LANMANNT"), type))
+                    str += TEXT(" Server");
+                else if (!_tcsicmp(TEXT("SERVERNT"), type))
+                    str += TEXT(" Advanced Server");
+            }
+        }
+        break;
+
+    case VER_PLATFORM_WIN32_WINDOWS:
+        if (osvi.dwMajorVersion > 4 ||
+            (osvi.dwMajorVersion == 4 && osvi.dwMinorVersion > 0)) {
+            if (osvi.dwMinorVersion == 90)
+                str = TEXT("Microsoft Windows ME");
+            else
+                str = TEXT("Microsoft Windows 98");
+
+            if (osvi.szCSDVersion[1] == 'A')
+                str += TEXT(" SE");
+        } else {
+            str = TEXT("Microsoft Windows 95");
+
+            if (osvi.szCSDVersion[1] == 'B' || osvi.szCSDVersion[1] == 'C')
+                str += TEXT(" OSR2");
+        }
+        break;
+
+    case VER_PLATFORM_WIN32s:
+        str = TEXT("Microsoft Win32s");
+
+    default:
+        return TEXT("???");
+    }
 
     String vstr;
-    vstr.printf(TEXT(" Version %lu.%lu (Build %lu)"), major, minor, build);
+
+    if (osvi.dwMajorVersion <= 4)
+        vstr.printf(TEXT(" Version %d.%d %s Build %d"),
+                    osvi.dwMajorVersion, osvi.dwMinorVersion,
+                    osvi.szCSDVersion, osvi.dwBuildNumber & 0xFFFF);
+    else
+        vstr.printf(TEXT(" %s (Build %d)"), osvi.szCSDVersion, osvi.dwBuildNumber & 0xFFFF);
+
     return str + vstr;
 }
 
 
 typedef void (WINAPI *RUNDLLPROC)(HWND hwnd, HINSTANCE hinst, LPCTSTR cmdline, DWORD nCmdShow);
-
 
 BOOL RunDLL(HWND hwnd, LPCTSTR dllname, LPCSTR procname, LPCTSTR cmdline, UINT nCmdShow)
 {
