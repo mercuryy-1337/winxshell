@@ -37,6 +37,7 @@
 #include <VersionHelpers.h>
 
 #include "../systemsettings/DesktopCommand.h"
+#include "wallpaper_source.h"
 
 enum WallPaperStyle {
     STYLE_WP_STRETCH = 0,
@@ -918,10 +919,15 @@ LRESULT DesktopShellView::LoadWallpaper(BOOL fInitial)
         SetRect(&_rcWp, 0, 0, 0, 0);
         SetRect(&_rcBitmapWp, 0, 0, 0, 0);
 
+        // Wallpaper source of truth: HKCU\Control Panel\Desktop\Wallpaper
+        // (see REVAMP.md phase 1). JS_DESKTOP.wallpaper is honored only as an
+        // optional override when explicitly set in JCFG.
         String wallpaper_path = JCFG2_DEF("JS_DESKTOP", "wallpaper", TEXT("")).ToString();
+        TCHAR wp_reg[MAX_PATH + 1] = { 0 };
         if (wallpaper_path == TEXT("")) {
-            UpdateWallpaper();
-            wallpaper_path = JCFG2_DEF("JS_DESKTOP", "wallpaper", TEXT("")).ToString();
+            if (WallpaperSource_Get(wp_reg, MAX_PATH)) {
+                wallpaper_path = wp_reg;
+            }
         }
         _fStyleWallp = JCFG2("JS_DESKTOP", "wallpaperstyle").ToInt();
         ExpandEnvironmentStrings(wallpaper_path, _szBMPName, MAX_PATH);
@@ -997,14 +1003,20 @@ void DesktopShellView::DrawDesktopBkgnd(HDC hdc)
 
 static BOOL UpdateWallpaper()
 {
-    static TCHAR lastWPPath[MAX_PATH] = { 0 };
-    TCHAR wpPath[MAX_PATH] = { 0 };
-    if (!SystemParametersInfo(SPI_GETDESKWALLPAPER, MAX_PATH, wpPath, 0)) return FALSE;
+    // Returns TRUE iff the current wallpaper path differs from what we last
+    // observed — caller uses this to decide whether to repaint. No JCFG cache
+    // is written: LoadWallpaper reads the registry directly via
+    // WallpaperSource_Get, so the cache is dead weight and a staleness risk.
+    static TCHAR lastWPPath[MAX_PATH + 1] = { 0 };
+    TCHAR wpPath[MAX_PATH + 1] = { 0 };
+    if (!WallpaperSource_Get(wpPath, MAX_PATH)) {
+        if (lastWPPath[0] == TEXT('\0')) return FALSE;
+        lastWPPath[0] = TEXT('\0');
+        return TRUE;
+    }
     if (lstrcmpi(lastWPPath, wpPath) == 0) return FALSE;
     lstrcpy(lastWPPath, wpPath);
     LOG(lastWPPath);
-    String strWallpaper(wpPath);
-    SET_JCFG2("JS_DESKTOP", "wallpaper") = strWallpaper;
     return TRUE;
 }
 

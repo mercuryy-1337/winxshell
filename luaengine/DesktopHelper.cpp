@@ -3,6 +3,7 @@
 #include "LuaEngine.h"
 
 #include "../systemsettings/DesktopCommand.h"
+#include "../desktop/wallpaper_source.h"
 
 EXTERN_C {
         int lua_desktop_call(lua_State* L, const char *funcname, int top, int base) {
@@ -18,8 +19,8 @@ EXTERN_C {
         } else if (func == "desktop::updatewallpaper") {
             SystemParametersInfo(SPI_SETDESKWALLPAPER, 0, NULL, SPIF_SENDWININICHANGE | SPIF_UPDATEINIFILE);
         } else if (func == "desktop::getwallpaper") {
-            TCHAR wpPath[MAX_PATH] = { 0 };
-            SystemParametersInfo(SPI_GETDESKWALLPAPER, MAX_PATH, wpPath, 0);
+            TCHAR wpPath[MAX_PATH + 1] = { 0 };
+            WallpaperSource_Get(wpPath, MAX_PATH);
             v.str = wpPath;
             PUSH_STR(v);
         } else if (func == "desktop::setwallpaper") {

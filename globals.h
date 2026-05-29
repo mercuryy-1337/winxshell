@@ -91,6 +91,7 @@ extern struct ExplorerGlobals {
     BOOL        _isShell;
     BOOL        _isWinPE;
     BOOL        _isNT5;
+    BOOL        _winui3_available;  // Phase 0: Windows App SDK bootstrap is loadable
     String      _langID;
     String      _locale;
 

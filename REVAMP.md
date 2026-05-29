@@ -13,19 +13,19 @@ These apply to every phase. Any change that violates them must be reverted or re
 
 ## Phase 0 — Foundations & guardrails
 
-- [ ] Add a CI / local script that builds Release and fails if `release/explauncher/explauncher.zip` exceeds 10 MB (warn at 9 MB).
-- [ ] Document the WinUI 3 deployment model we'll use (framework-dependent vs. self-contained) and pick the smallest viable option. Default: framework-dependent against the Windows App SDK runtime, with a runtime-presence probe at startup.
-- [ ] Add a runtime capability check (`g_Globals._winui3_available`) that downgrades gracefully to the legacy Win32/GDI+ path when WinUI 3 / Windows App SDK isn't installed, so the shell still runs on stock systems.
-- [ ] Introduce a thin C facade (`winui/WinUIHost.{h,cpp}`) so legacy translation units never include `cppwinrt` headers (the previous attempt overflowed `.bsc` size — keep that boundary).
+- [x] Add a script that fails if the shipped surface exceeds 10 MB. See [scripts/check_size.ps1](scripts/check_size.ps1). Scope: `Theme/Explauncher.exe` + `Theme/wxsStub*.dll` + `Theme/wxsUI/*` (whatever we ship as part of the shell). Bundled third-party tools under `Explorer/` are excluded. Current measurement: **5.37 MB / 10 MB** — ~4.6 MB headroom for WinUI 3 deps. Runs locally without admin.
+- [x] **Deployment model decision: framework-dependent against the Windows App SDK runtime, with a runtime-presence probe at startup.** Self-contained deployment would add ~30+ MB of `Microsoft.UI.Xaml*.dll` / `Microsoft.WindowsAppRuntime.*.dll` to the shipped surface — blows the 10 MB budget by 3×. Framework-dependent costs nothing in the zip; the trade-off is that the test VM may not have the runtime installed, which is why we need the probe + Win32 fallback in the next bullet. Future: if we ever need to guarantee WinUI 3 on stock systems, revisit by *selectively* vendoring the Bootstrap DLL only (~1 MB) and letting it download the runtime on first launch.
+- [x] Add a runtime capability check (`g_Globals._winui3_available`) that downgrades gracefully to the legacy Win32/GDI+ path when WinUI 3 / Windows App SDK isn't installed. Implemented in [globals.cpp](globals.cpp) via [WinUIHost_IsAvailable](winui/WinUIHost.cpp), which `LoadLibraryEx`s `Microsoft.WindowsAppRuntime.Bootstrap.dll` from system search paths.
+- [x] Introduce a thin C facade (`winui/WinUIHost.{h,cpp}`) so legacy translation units never include `cppwinrt` headers (the previous attempt overflowed `.bsc` size — keep that boundary). [Stub in place](winui/WinUIHost.h); `Initialize`/`Shutdown` are no-ops until Phase 2.
 
 ## Phase 1 — Wallpaper unification
 
-- [ ] Add `WallpaperSource` helper that reads `HKCU\Control Panel\Desktop\Wallpaper` (REG_SZ), expands env strings, and returns a normalized path.
-- [ ] Add `RegNotifyChangeKeyValue` watcher that re-emits a `WM_WALLPAPER_CHANGED` style notification (or callback) on change.
-- [ ] Replace `SystemParametersInfo(SPI_GETDESKWALLPAPER, ...)` in [desktop.cpp:1002](desktop/desktop.cpp:1002) (`UpdateWallpaper`) with `WallpaperSource`.
-- [ ] Remove the `JS_DESKTOP.wallpaper` JCFG override path or repurpose it as an *optional* user override; default behavior must be "read from registry every time."
-- [ ] Audit [DesktopHelper.cpp](luaengine/DesktopHelper.cpp) and [daemon.cpp](features/daemon.cpp) for other SPI/JCFG wallpaper reads and route them through `WallpaperSource`.
-- [ ] Wire the same source into any acrylic/Mica fallback that samples the wallpaper for tinting (start menu, future flyouts).
+- [x] Add `WallpaperSource` helper that reads `HKCU\Control Panel\Desktop\Wallpaper` (REG_SZ), expands env strings, and returns a normalized path. See [desktop/wallpaper_source.h](desktop/wallpaper_source.h) / [.cpp](desktop/wallpaper_source.cpp). Also verifies the file exists on disk (returns FALSE on missing file rather than handing back a stale path).
+- [x] Add `RegNotifyChangeKeyValue` watcher that re-emits a `WM_WALLPAPER_CHANGED` style notification (or callback) on change. `WallpaperSource_StartWatch(hwnd, msg)` runs a background thread, posts `msg` to `hwnd` on any value change under `HKCU\Control Panel\Desktop`. Not yet wired into the desktop window (existing `WM_SETTINGCHANGE`/`SPI_SETDESKWALLPAPER` path already covers the in-session change case); will be wired by future WinUI surfaces that need live updates.
+- [x] Replace `SystemParametersInfo(SPI_GETDESKWALLPAPER, ...)` in [desktop.cpp](desktop/desktop.cpp) (`UpdateWallpaper`) with `WallpaperSource`. Also stopped writing the result back to `JS_DESKTOP.wallpaper` — the JCFG cache was a staleness risk; the helper is now the single read.
+- [x] Repurpose `JS_DESKTOP.wallpaper` as an *optional* override. If set in JCFG, it wins; otherwise the registry is read directly via `WallpaperSource_Get`.
+- [x] Audit [DesktopHelper.cpp](luaengine/DesktopHelper.cpp) — `desktop::getwallpaper` now goes through `WallpaperSource_Get`. [daemon.cpp](features/daemon.cpp:265) only *writes* (`SPI_SETDESKWALLPAPER` to broadcast change); no read to migrate.
+- [ ] Wire the same source into any acrylic/Mica fallback that samples the wallpaper for tinting (start menu, future flyouts). Deferred to Phase 3 when the start menu lands.
 
 ## Phase 2 — WinUI 3 hosting skeleton
 

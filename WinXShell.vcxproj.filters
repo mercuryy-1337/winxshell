@@ -6,6 +6,12 @@
   <ItemGroup>
     <ClCompile Include="explorer.cpp" />
     <ClCompile Include="precomp.cpp" />
+    <ClCompile Include="desktop\wallpaper_source.cpp">
+      <Filter>desktop</Filter>
+    </ClCompile>
+    <ClCompile Include="winui\WinUIHost.cpp">
+      <Filter>winui</Filter>
+    </ClCompile>
     <ClCompile Include="desktop\desktop.cpp">
       <Filter>desktop</Filter>
     </ClCompile>
@@ -182,6 +188,12 @@
     <ClInclude Include="externals.h" />
     <ClInclude Include="globals.h" />
     <ClInclude Include="precomp.h" />
+    <ClInclude Include="desktop\wallpaper_source.h">
+      <Filter>desktop</Filter>
+    </ClInclude>
+    <ClInclude Include="winui\WinUIHost.h">
+      <Filter>winui</Filter>
+    </ClInclude>
     <ClInclude Include="desktop\desktop.h">
       <Filter>desktop</Filter>
     </ClInclude>
@@ -545,6 +557,9 @@
     </Filter>
     <Filter Include="luaengine">
       <UniqueIdentifier>{f0e0b86c-6c9f-460b-ac93-005adc88dc12}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="winui">
+      <UniqueIdentifier>{8d2a4f1c-7b3e-4b6d-9e5f-1c0d2e3a4b5c}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

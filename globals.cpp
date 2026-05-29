@@ -5,6 +5,7 @@
 #include "vendor/json.h"
 #include "jconfig/jcfg.h"
 #include "luaengine/LuaAppEngine.h"
+#include "winui/WinUIHost.h"
 
 extern BOOL isWinPE();
 
@@ -39,6 +40,7 @@ ExplorerGlobals::ExplorerGlobals()
     _isDebug = FALSE;
     _isShell = FALSE;
     _isWinPE = FALSE;
+    _winui3_available = FALSE;
 
     _uifolder = _T("");
     _lua = NULL;
@@ -164,6 +166,7 @@ void ExplorerGlobals::getSystemInfo()
     }
 
     g_Globals._isWinPE = isWinPE();
+    g_Globals._winui3_available = WinUIHost_IsAvailable();
 }
 
 void ExplorerGlobals::loadConfig()

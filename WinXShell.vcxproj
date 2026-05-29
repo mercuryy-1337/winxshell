@@ -620,6 +620,22 @@ cscript ResBuilder.vbs
     <ClCompile Include="taskbar\taskbar.cpp" />
     <ClCompile Include="taskbar\traynotify.cpp" />
     <ClCompile Include="desktop\desktop.cpp" />
+    <ClCompile Include="desktop\wallpaper_source.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="winui\WinUIHost.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="shell\entries.cpp" />
     <ClCompile Include="shell\shellfs.cpp" />
     <ClCompile Include="shell\winfs.cpp" />
@@ -707,6 +723,8 @@ cscript ResBuilder.vbs
     <ClInclude Include="taskbar\taskbar.h" />
     <ClInclude Include="taskbar\traynotify.h" />
     <ClInclude Include="desktop\desktop.h" />
+    <ClInclude Include="desktop\wallpaper_source.h" />
+    <ClInclude Include="winui\WinUIHost.h" />
     <ClInclude Include="shell\entries.h" />
     <ClInclude Include="shell\shellfs.h" />
     <ClInclude Include="shell\winfs.h" />
