@@ -777,15 +777,20 @@ BOOL CALLBACK TaskBar::EnumWndProc(HWND hwnd, LPARAM lparam)
 
 void TaskBar::ApplyBackgroundStyle()
 {
-    // Always re-read so live theme switches (system dark/light toggle) take
-    // effect; the previous static cache caused the very first lookup to win
-    // forever, which broke "::主题":"auto".
-    String bkmode = TASKBAR_GETBKMODE().ToString();
-    if (bkmode.empty() || bkmode == TEXT("opaque")) {
-        return;
+    static String bkmode = TEXT("-");
+    int transparency = 100;
+    COLORREF transparency_color = 0;
+    if (bkmode == TEXT("")) return;
+
+    if (bkmode == TEXT("-")) {
+        bkmode = TASKBAR_GETBKMODE().ToString();
+        if (bkmode == TEXT("opaque")) {
+            bkmode = TEXT("");
+            return;
+        }
+        transparency = TASKBAR_GETBKTRANSPARENCY(100);
+        transparency_color = TASKBAR_GETBKTRANSPARENCYCOLOR();
     }
-    int transparency = TASKBAR_GETBKTRANSPARENCY(100);
-    COLORREF transparency_color = TASKBAR_GETBKTRANSPARENCYCOLOR();
     TaskbarTransparency(GetParent(_hwnd), bkmode.c_str(), transparency, transparency_color);
 }
 

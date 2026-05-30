@@ -68,11 +68,10 @@
     },
     "dark": {
       "taskbar": {
-        "bkcolor": [32, 32, 32],
+        "bkcolor": [38, 38, 38],
         "#bkmode_values": "opaque; transparent; acrylic",
         "bkmode": "transparent",
-        "transparency": 22,
-        "transparency_color": [32, 32, 32],
+        "transparency": 64,
         "task_line_color": [238, 238, 238],
         "textcolor": "0xffffff"
       }
@@ -80,11 +79,10 @@
     "light": {
       "taskbar": {
         "style": "light",
-        "bkcolor": [245, 245, 245],
+        "bkcolor": [238, 238, 238],
         "#bkmode_values": "opaque; transparent; acrylic",
-        "bkmode": "transparent",
-        "transparency": 22,
-        "transparency_color": [245, 245, 245],
+        "bkmode": "acrylic",
+        "transparency": 100,
         "task_line_color": [0, 120, 215],
         "textcolor": "0x000000"
       }
@@ -98,7 +96,7 @@
     "no_task_title": false,
     "userebar": false,
     "#theme_values": "auto; dark; light; blue",
-    "theme": "auto",
+    "theme": "dark",
     "height": 40
   },
   "::STARTMENU": {
