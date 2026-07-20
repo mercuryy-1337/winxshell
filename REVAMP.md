@@ -18,7 +18,7 @@
 
 The revamp is complete when all of the following are true:
 
-- [x] The visible taskbar is rendered with WinUI 3 controls hosted by the WinXShell shell window.
+- [ ] The visible taskbar is rendered with WinUI 3 controls hosted by the WinXShell shell window.
 - [ ] One continuous Desktop Acrylic backdrop covers the entire taskbar in normal operation.
 - [ ] Transparency-disabled, high-contrast, unsupported-OS, and failed-runtime cases have intentional solid-color or legacy fallbacks.
 - [ ] The Start button and all pinned/running app buttons form one icon-only group.
@@ -214,9 +214,9 @@ These are starting design tokens. Compare them against a native Windows 11 refer
 These two deliverables are the required next gate before broader taskbar features
 are added:
 
-1. [x] Replace the visible `Shell_TrayWnd` taskbar surface with a hosted WinUI 3
-   `DesktopWindowXamlSource`. The existing Win32 taskbar remains only as the
-   explicit bootstrap/failure fallback.
+1. [ ] Replace the visible `Shell_TrayWnd` taskbar surface with a hosted WinUI 3
+   `DesktopWindowXamlSource`. The existing Win32 taskbar remains the default
+   renderer until the WinUI surface has real app and tray models.
 2. [x] Produce versioned x64 release ZIP builds. Each archive must include the
    executable, required resources and Lua files, the Windows App SDK bootstrap
    DLL, and clear Windows App Runtime installation/run instructions; validate an

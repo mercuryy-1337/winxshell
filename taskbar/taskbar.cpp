@@ -30,6 +30,7 @@
 #include <WinUser.h>
 #include "taskbar.h"
 #include "traynotify.h" // for NOTIFYAREA_WIDTH_DEF
+#include "../winui/WinUIHost.h"
 
 #include <Uxtheme.h>
 #pragma comment(lib, "uxtheme.lib")
@@ -777,6 +778,12 @@ BOOL CALLBACK TaskBar::EnumWndProc(HWND hwnd, LPARAM lparam)
 
 void TaskBar::ApplyBackgroundStyle()
 {
+    // The WinUI island owns the taskbar background. Applying the legacy
+    // SetWindowCompositionAttribute effect to its parent after startup dims
+    // the desktop and turns the hosted Acrylic into a gray slab.
+    if (WinUIHost_IsInitialized())
+        return;
+
     static String bkmode = TEXT("-");
     int transparency = 100;
     COLORREF transparency_color = 0;

@@ -253,15 +253,15 @@ BOOL WinUIHost_AttachTaskbar(HWND parent)
         g_taskbar_source = DesktopWindowXamlSource();
         g_taskbar_source.Initialize(winrt::Microsoft::UI::GetWindowIdFromWindow(parent));
 
-        // A single XAML root owns the whole visible taskbar. Acrylic is hosted
-        // by WinUI; the root's solid brush is the intentional fallback if a
-        // machine's composition policy rejects the system backdrop.
+        // A single XAML root owns the taskbar background. The packaged WinUI
+        // version supplies AcrylicBrush's island-compatible backdrop directly;
+        // do not use DesktopAcrylicBackdrop or parent-window composition here.
         g_taskbar_root = Grid();
         auto root = g_taskbar_root;
         auto acrylic = AcrylicBrush();
-        acrylic.TintColor(winrt::Windows::UI::Color{ 230, 32, 32, 32 });
-        acrylic.TintOpacity(0.78);
-        acrylic.FallbackColor(winrt::Windows::UI::Color{ 255, 32, 32, 32 });
+        acrylic.TintColor(winrt::Windows::UI::Color{ 255, 245, 245, 245 });
+        acrylic.TintOpacity(0.46);
+        acrylic.FallbackColor(winrt::Windows::UI::Color{ 255, 235, 235, 235 });
         root.Background(acrylic);
 
         g_icon_strip = StackPanel();
@@ -272,8 +272,32 @@ BOOL WinUIHost_AttachTaskbar(HWND parent)
         icon_strip.Spacing(8);
 
         Button start_button;
-        start_button.Content(winrt::box_value(L"⊞"));
-        start_button.FontSize(20);
+        start_button.Width(44);
+        start_button.Height(36);
+        start_button.Padding(Thickness{ 0.0, 0.0, 0.0, 0.0 });
+
+        // Project-owned Windows-11-style four-pane mark. Keeping it as XAML
+        // geometry avoids a font-glyph dependency and the mojibake that the
+        // old placeholder character produced in the legacy build encoding.
+        Grid start_mark;
+        start_mark.Width(18);
+        start_mark.Height(18);
+        for (int row = 0; row != 2; ++row) {
+            start_mark.RowDefinitions().Append(RowDefinition());
+            start_mark.ColumnDefinitions().Append(ColumnDefinition());
+        }
+        for (int row = 0; row != 2; ++row) {
+            for (int column = 0; column != 2; ++column) {
+                Border pane;
+                pane.Background(SolidColorBrush(winrt::Windows::UI::Color{ 255, 0, 120, 212 }));
+                pane.CornerRadius(CornerRadius{ 1.0, 1.0, 1.0, 1.0 });
+                pane.Margin(Thickness{ 1.0, 1.0, 1.0, 1.0 });
+                Grid::SetRow(pane, row);
+                Grid::SetColumn(pane, column);
+                start_mark.Children().Append(pane);
+            }
+        }
+        start_button.Content(start_mark);
         start_button.Click([](auto const&, auto const&) {
             if (g_taskbar_parent)
                 PostMessage(g_taskbar_parent, WM_COMMAND,
@@ -281,18 +305,9 @@ BOOL WinUIHost_AttachTaskbar(HWND parent)
         });
         icon_strip.Children().Append(start_button);
 
-        TextBlock status;
-        status.Text(L"WinXShell");
-        status.FontSize(12);
-        status.VerticalAlignment(VerticalAlignment::Center);
-        icon_strip.Children().Append(status);
         root.Children().Append(icon_strip);
 
         g_taskbar_source.Content(root);
-        // DesktopAcrylicBackdrop is the supported App SDK route for the
-        // island. Keep the AcrylicBrush fallback above for systems that turn
-        // transparency off or decline a backdrop.
-        g_taskbar_source.SystemBackdrop(DesktopAcrylicBackdrop());
 
         auto bridge = g_taskbar_source.SiteBridge().as<DesktopChildSiteBridge>();
         g_taskbar_island = winrt::Microsoft::UI::GetWindowFromWindowId(bridge.WindowId());
