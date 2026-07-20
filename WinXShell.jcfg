@@ -158,6 +158,10 @@
     }
   },
   "::任务栏": {
+    "#renderer_values": "auto; winui3; legacy",
+    "renderer": "auto",
+    "#alignment_values": "left; center",
+    "alignment": "center",
     "::显示": true,
     "::使用小图标": false,
     "::显示任务缩略图": true,

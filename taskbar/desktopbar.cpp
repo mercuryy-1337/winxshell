@@ -36,6 +36,7 @@
 #include "startmenu.h"
 #include "traynotify.h"
 #include "quicklaunch.h"
+#include "../winui/WinUIHost.h"
 
 #include "../dialogs/settings.h"
 #include "../utility/system_theme.h"
@@ -111,6 +112,16 @@ LRESULT DesktopBar::Init(LPCREATESTRUCT pcs)
 {
     if (super::Init(pcs))
         return 1;
+
+    // Renderer selection is opt-in while the WinUI surface is introduced in
+    // slices. Never let a missing or incompatible Windows App SDK runtime make
+    // the shell fail to create Shell_TrayWnd: the legacy renderer is the one
+    // launch fallback for both `auto` and a forced `winui3` setting.
+    string_t renderer = JCFG2_DEF("JS_TASKBAR", "renderer", TEXT("auto")).ToString();
+    if (renderer.compare(TEXT("legacy")) != 0 && !WinUIHost_Initialize()) {
+        LOG(FmtString(TEXT("WinUI taskbar unavailable (error %lu); using legacy renderer.\n"),
+            WinUIHost_GetLastError()).c_str());
+    }
 
     // create start button
     string_t start_str(JCFG2("JS_STARTMENU", "text").ToString());

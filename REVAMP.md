@@ -1,6 +1,6 @@
 # WinXShell taskbar revamp
 
-> Status: implementation not started; existing foundations are marked complete below.
+> Status: implementation started. The legacy renderer remains the active fallback until the first WinUI taskbar surface passes its smoke tests.
 >
 > Last updated: 2026-07-19
 >
@@ -209,6 +209,19 @@ These are starting design tokens. Compare them against a native Windows 11 refer
 
 ## Implementation phases
 
+## Immediate next implementation slice
+
+These two deliverables are the required next gate before broader taskbar features
+are added:
+
+1. [ ] Replace the visible `Shell_TrayWnd` taskbar surface with a hosted WinUI 3
+   `DesktopWindowXamlSource`. The existing Win32 taskbar remains only as the
+   explicit bootstrap/failure fallback.
+2. [ ] Produce versioned x64 release ZIP builds. Each archive must include the
+   executable, required resources and Lua files, the Windows App SDK bootstrap
+   DLL, and clear Windows App Runtime installation/run instructions; validate an
+   extracted archive before publishing it.
+
 ## Phase 0 — Baseline, decisions, and guardrails
 
 ### Existing verified foundations
@@ -225,12 +238,12 @@ These are starting design tokens. Compare them against a native Windows 11 refer
 - [ ] Capture baseline screenshots and a 60 fps interaction recording at 100%, 125%, 150%, and 200% scale.
 - [ ] Record baseline startup time, idle CPU, working set, taskbar zip size, and alignment/layout behavior on the reference VM.
 - [ ] Add an architecture decision record for one `DesktopWindowXamlSource` hosted by each taskbar shell HWND.
-- [ ] Add `JS_TASKBAR.renderer = "auto" | "winui3" | "legacy"`; default to `auto`.
+- [x] Add `JS_TASKBAR.renderer = "auto" | "winui3" | "legacy"`; default to `auto`.
 - [ ] Define support policy: Windows 11 is the visual-parity target; Windows 10/WinPE may use the legacy or solid fallback.
 - [ ] Replace the obsolete ARM32 expectation with an ARM64 plan. Windows App SDK runtime distributions are x86, x64, and ARM64; ARM32 remains legacy-only if retained.
 - [ ] Decide the exact Windows App SDK Stable release at implementation time and pin it; never use a floating package version.
 - [ ] Document where per-user taskbar state is stored and its schema/versioning.
-- [ ] Add a safe rollback rule: a failed WinUI bootstrap before the surface is shown selects legacy once and does not retry in a crash loop.
+- [x] Add a safe rollback rule: a failed WinUI bootstrap before the surface is shown selects legacy once and does not retry in a crash loop.
 - [ ] Build a small test sender that can exercise shell hooks and all supported notification-icon messages.
 
 ### Phase 0 gate
@@ -244,12 +257,12 @@ These are starting design tokens. Compare them against a native Windows 11 refer
 
 ### Build and deployment
 
-- [ ] Add an exact `Microsoft.WindowsAppSDK` package reference to [`WinXShell.vcxproj`](WinXShell.vcxproj).
-- [ ] Configure the existing executable as unpackaged.
-- [ ] Disable automatic bootstrap if explicit initialization is used so startup failures can select the legacy renderer.
-- [ ] Call `MddBootstrapInitialize`/the supported bootstrap API before any Windows App SDK or WinUI API.
-- [ ] Replace `LoadLibraryEx` presence-only probing with a versioned initialization result and actionable log message.
-- [ ] Pin and restore dependencies reproducibly.
+- [x] Pin exact native `Microsoft.WindowsAppSDK` and C++/WinRT packages in [`packages.config`](packages.config), with guarded imports in [`WinXShell.vcxproj`](WinXShell.vcxproj).
+- [x] Configure the existing executable as unpackaged.
+- [x] Disable automatic bootstrap so explicit startup failures can select the legacy renderer.
+- [x] Call the supported `MddBootstrapInitialize2` bootstrap API before any Windows App SDK or WinUI API.
+- [x] Replace the presence-only probe with a versioned bootstrap result and actionable legacy-fallback log message.
+- [x] Restore pinned dependencies reproducibly with NuGet.
 - [ ] Ensure Windows App SDK runtime installation is documented for x86, x64, and ARM64 builds.
 - [ ] Keep bundled bootstrap/runtime files inside the release-size accounting rules.
 
@@ -269,7 +282,7 @@ These are starting design tokens. Compare them against a native Windows 11 refer
 
 ### DPI foundation
 
-- [ ] Declare `PerMonitorV2` in [`WinXShell.exe.manifest`](WinXShell.exe.manifest), retaining an older-system fallback declaration where needed.
+- [x] Declare `PerMonitorV2` in [`WinXShell.exe.manifest`](WinXShell.exe.manifest), retaining an older-system fallback declaration where needed.
 - [ ] Handle `WM_DPICHANGED` on every top-level taskbar/flyout HWND.
 - [ ] Stop treating the primary display's `LOGPIXELSX/Y` values as global taskbar DPI.
 - [ ] Verify XAML rasterization scale matches the monitor containing each host.

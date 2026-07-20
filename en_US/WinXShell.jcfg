@@ -89,6 +89,10 @@
     }
   },
   "JS_TASKBAR": {
+    "#renderer_values": "auto; winui3; legacy",
+    "renderer": "auto",
+    "#alignment_values": "left; center",
+    "alignment": "center",
     "visible": true,
     "smallicon": false,
     "thumbnail": true,
