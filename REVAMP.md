@@ -18,7 +18,7 @@
 
 The revamp is complete when all of the following are true:
 
-- [ ] The visible taskbar is rendered with WinUI 3 controls hosted by the WinXShell shell window.
+- [x] The visible taskbar is rendered with WinUI 3 controls hosted by the WinXShell shell window.
 - [ ] One continuous Desktop Acrylic backdrop covers the entire taskbar in normal operation.
 - [ ] Transparency-disabled, high-contrast, unsupported-OS, and failed-runtime cases have intentional solid-color or legacy fallbacks.
 - [ ] The Start button and all pinned/running app buttons form one icon-only group.
@@ -214,10 +214,10 @@ These are starting design tokens. Compare them against a native Windows 11 refer
 These two deliverables are the required next gate before broader taskbar features
 are added:
 
-1. [ ] Replace the visible `Shell_TrayWnd` taskbar surface with a hosted WinUI 3
+1. [x] Replace the visible `Shell_TrayWnd` taskbar surface with a hosted WinUI 3
    `DesktopWindowXamlSource`. The existing Win32 taskbar remains only as the
    explicit bootstrap/failure fallback.
-2. [ ] Produce versioned x64 release ZIP builds. Each archive must include the
+2. [x] Produce versioned x64 release ZIP builds. Each archive must include the
    executable, required resources and Lua files, the Windows App SDK bootstrap
    DLL, and clear Windows App Runtime installation/run instructions; validate an
    extracted archive before publishing it.
@@ -264,20 +264,20 @@ are added:
 - [x] Replace the presence-only probe with a versioned bootstrap result and actionable legacy-fallback log message.
 - [x] Restore pinned dependencies reproducibly with NuGet.
 - [ ] Ensure Windows App SDK runtime installation is documented for x86, x64, and ARM64 builds.
-- [ ] Keep bundled bootstrap/runtime files inside the release-size accounting rules.
+- [x] Keep bundled bootstrap/runtime files inside the release-size accounting rules.
 
 ### Host lifecycle
 
-- [ ] Initialize COM/WinRT in the correct apartment on the shell UI thread.
-- [ ] Create and own a `DispatcherQueueController` that cooperates with the current message pump.
-- [ ] Initialize `WindowsXamlManager`/required application state exactly once on that thread.
-- [ ] Create a `DesktopWindowXamlSource` and attach it to the existing `Shell_TrayWnd`.
-- [ ] Resize the island child HWND to the full client rect on every host resize and DPI change.
-- [ ] Route XAML initialization failures to one logged legacy fallback.
-- [ ] Add explicit `WinUIHost_Initialize`, taskbar-surface create/destroy, and `WinUIHost_Shutdown` states.
-- [ ] Make every lifecycle call idempotent.
-- [ ] Implement and document the mandatory shutdown order.
-- [ ] Disable Browse Information for C++/WinRT-heavy translation units to avoid the known BSCMAKE overflow.
+- [x] Initialize COM/WinRT in the correct apartment on the shell UI thread.
+- [x] Create and own a `DispatcherQueueController` that cooperates with the current message pump.
+- [x] Initialize `WindowsXamlManager`/required application state exactly once on that thread.
+- [x] Create a `DesktopWindowXamlSource` and attach it to the existing `Shell_TrayWnd`.
+- [x] Resize the island child HWND to the full client rect on every host resize and DPI change.
+- [x] Route XAML initialization failures to one logged legacy fallback.
+- [x] Add explicit `WinUIHost_Initialize`, taskbar-surface create/destroy, and `WinUIHost_Shutdown` states.
+- [x] Make every lifecycle call idempotent.
+- [x] Implement and document the mandatory shutdown order.
+- [x] Disable Browse Information for C++/WinRT-heavy translation units to avoid the known BSCMAKE overflow.
 - [ ] Keep C++/WinRT includes confined to the new WinUI implementation boundary.
 
 ### DPI foundation
@@ -289,7 +289,7 @@ are added:
 
 ### Phase 1 gate
 
-- [ ] A blank WinUI 3 element renders inside `Shell_TrayWnd` without a second top-level taskbar window.
+- [x] A blank WinUI 3 element renders inside `Shell_TrayWnd` without a second top-level taskbar window (live smoke test, 2026-07-19).
 - [ ] Pointer, keyboard, DispatcherQueue, and Win32 messages remain responsive.
 - [ ] Create/destroy succeeds 100 consecutive times in a lifecycle test without a crash, hang, or growing island count.
 - [ ] Runtime-missing and forced-failure tests select the legacy renderer once.
@@ -720,7 +720,7 @@ Names may change, but responsibility must remain separated.
 ## Suggested reviewable change sequence
 
 1. [ ] Build/deployment, Per-Monitor-V2 manifest, and explicit bootstrap.
-2. [ ] Blank XAML island with lifecycle and renderer fallback.
+2. [x] Blank XAML island with lifecycle and renderer fallback.
 3. [ ] Shell bridge plus Acrylic root and monitor geometry.
 4. [ ] Unified task model and asynchronous icon loader.
 5. [ ] WinUI app strip, Start glyph, activation, indicators, and overflow.

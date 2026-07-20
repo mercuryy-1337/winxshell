@@ -55,6 +55,8 @@ DesktopBar::DesktopBar(HWND hwnd)
 
 DesktopBar::~DesktopBar()
 {
+    WinUIHost_DetachTaskbar();
+    WinUIHost_Shutdown();
     if (_hbmQuickLaunchBack) DeleteObject(_hbmQuickLaunchBack);
     RegisterHotkeys(TRUE);
     // restore work area to the previous size
@@ -118,7 +120,8 @@ LRESULT DesktopBar::Init(LPCREATESTRUCT pcs)
     // the shell fail to create Shell_TrayWnd: the legacy renderer is the one
     // launch fallback for both `auto` and a forced `winui3` setting.
     string_t renderer = JCFG2_DEF("JS_TASKBAR", "renderer", TEXT("auto")).ToString();
-    if (renderer.compare(TEXT("legacy")) != 0 && !WinUIHost_Initialize()) {
+    bool winui_renderer = renderer.compare(TEXT("legacy")) != 0 && WinUIHost_Initialize();
+    if (renderer.compare(TEXT("legacy")) != 0 && !winui_renderer) {
         LOG(FmtString(TEXT("WinUI taskbar unavailable (error %lu); using legacy renderer.\n"),
             WinUIHost_GetLastError()).c_str());
     }
@@ -287,6 +290,18 @@ LRESULT DesktopBar::Init(LPCREATESTRUCT pcs)
     // prepare Startmenu, but hide it for now
     _startMenuRoot = GET_WINDOW(StartMenuRoot, StartMenuRoot::Create(_hwndStartButton, STARTMENUROOT_ICON_SIZE));
     _startMenuRoot->_hwndStartButton = _hwndStartButton;
+
+    // Create the island after every legacy child exists. When it succeeds it
+    // occupies the complete visible taskbar; the child controls keep serving
+    // as the compatibility shell bridge until their WinUI replacements land.
+    if (winui_renderer && !WinUIHost_AttachTaskbar(_hwnd)) {
+        LOG(FmtString(TEXT("WinUI taskbar surface unavailable (error %lu); using legacy renderer.\n"),
+            WinUIHost_GetLastError()).c_str());
+    }
+    else if (winui_renderer) {
+        string_t alignment = JCFG2_DEF("JS_TASKBAR", "alignment", TEXT("center")).ToString();
+        WinUIHost_SetTaskbarIconAlignment(alignment.compare(TEXT("left")) != 0, FALSE);
+    }
 
     return 0;
 }
@@ -710,6 +725,7 @@ void DesktopBar::Resize(int cx, int cy)
         DeferWindowPos(hdwp, _hwndNotify, 0, cx - notifyarea_width, 0, notifyarea_width, cy, SWP_NOZORDER | SWP_NOACTIVATE);
 
     EndDeferWindowPos(hdwp);
+    WinUIHost_ResizeTaskbar(cx, cy);
 
     WindowRect rect(_hwnd);
     RECT work_area = {0, 0, GetSystemMetrics(SM_CXSCREEN), rect.top};

@@ -1,16 +1,31 @@
 //
-// WinUIHost.cpp — Phase 0 stub. See header.
+// WinUIHost.cpp — WinUI 3 island boundary. See header.
 //
-// IMPORTANT: this file is the *only* place cppwinrt may be included. As of
-// Phase 0 we do not pull cppwinrt in yet — only the bootstrap presence probe
-// is implemented. Phase 2 will add the DispatcherQueueController +
-// Microsoft.UI.Xaml.Application bring-up here, behind the same C facade.
+// IMPORTANT: this is the only source file that includes C++/WinRT headers.
+// The legacy shell continues to talk to this code through the small C facade
+// in WinUIHost.h.
 //
 
 #include <windows.h>
 #include <objbase.h>
 #include <appmodel.h>
+#include <chrono>
 #include <WindowsAppSDK-VersionInfo.h>
+#include <winrt/base.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Foundation.Numerics.h>
+#include <winrt/Windows.UI.h>
+#include <winrt/Microsoft.UI.Composition.h>
+#include <winrt/Microsoft.UI.h>
+#include <winrt/Microsoft.UI.Interop.h>
+#include <winrt/Microsoft.UI.Dispatching.h>
+#include <winrt/Microsoft.UI.Content.h>
+#include <winrt/Microsoft.UI.Xaml.h>
+#include <winrt/Microsoft.UI.Xaml.Controls.h>
+#include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
+#include <winrt/Microsoft.UI.Xaml.Hosting.h>
+#include <winrt/Microsoft.UI.Xaml.Media.h>
 #include "WinUIHost.h"
 
 // Name of the Windows App SDK bootstrap DLL installed in the system PATH when
@@ -23,11 +38,72 @@ static DWORD g_last_error = ERROR_NOT_READY;
 static BOOL g_com_initialized = FALSE;
 static BOOL g_bootstrap_initialized = FALSE;
 static HMODULE g_bootstrap_module = NULL;
+static HWND g_taskbar_parent = NULL;
+static HWND g_taskbar_island = NULL;
+static const int WINUI_START_COMMAND_ID = 0x1000; // IDC_START, isolated from legacy headers.
+
+static winrt::Microsoft::UI::Dispatching::DispatcherQueueController g_dispatcher_queue{ nullptr };
+static winrt::Microsoft::UI::Xaml::Hosting::WindowsXamlManager g_xaml_manager{ nullptr };
+static winrt::Microsoft::UI::Xaml::Hosting::DesktopWindowXamlSource g_taskbar_source{ nullptr };
+static winrt::Microsoft::UI::Xaml::Controls::Grid g_taskbar_root{ nullptr };
+static winrt::Microsoft::UI::Xaml::Controls::StackPanel g_icon_strip{ nullptr };
 
 typedef HRESULT(WINAPI *MddBootstrapInitialize2Fn)(
     UINT32 majorMinorVersion, PCWSTR versionTag, PACKAGE_VERSION minVersion,
     UINT32 options);
 typedef void(WINAPI *MddBootstrapShutdownFn)(void);
+
+static DWORD WinUIHost_HResultToError(HRESULT hr)
+{
+    return static_cast<DWORD>(hr);
+}
+
+static void WinUIHost_ClearTaskbarSurface(void)
+{
+    if (g_taskbar_source) {
+        // Close before the parent HWND/runtime goes away. This also releases
+        // the island child HWND created by DesktopWindowXamlSource.
+        g_taskbar_source.Close();
+        g_taskbar_source = nullptr;
+    }
+    g_icon_strip = nullptr;
+    g_taskbar_root = nullptr;
+    g_taskbar_island = NULL;
+    g_taskbar_parent = NULL;
+}
+
+static void WinUIHost_UpdateIconStripAlignment(BOOL centered, BOOL animate)
+{
+    if (!g_icon_strip || !g_taskbar_root)
+        return;
+
+    using namespace winrt::Microsoft::UI::Xaml;
+    using namespace winrt::Microsoft::UI::Xaml::Hosting;
+
+    // Capture the old arranged position, change the layout rule, then offset
+    // the visual back to its old pixels. The Composition spring brings it to
+    // the newly-arranged position without a one-frame jump.
+    float old_x = g_icon_strip.TransformToVisual(g_taskbar_root)
+        .TransformPoint(winrt::Windows::Foundation::Point{ 0.0f, 0.0f }).X;
+    g_icon_strip.HorizontalAlignment(centered ? HorizontalAlignment::Center : HorizontalAlignment::Left);
+    g_taskbar_root.UpdateLayout();
+    float new_x = g_icon_strip.TransformToVisual(g_taskbar_root)
+        .TransformPoint(winrt::Windows::Foundation::Point{ 0.0f, 0.0f }).X;
+
+    auto visual = ElementCompositionPreview::GetElementVisual(g_icon_strip);
+    visual.Offset({ old_x - new_x, 0.0f, 0.0f });
+    if (animate) {
+        auto spring = visual.Compositor().CreateSpringVector3Animation();
+        spring.FinalValue(winrt::Windows::Foundation::IReference<winrt::Windows::Foundation::Numerics::float3>(
+            winrt::Windows::Foundation::Numerics::float3{ 0.0f, 0.0f, 0.0f }));
+        spring.DampingRatio(0.72f);
+        spring.Period(std::chrono::milliseconds(320));
+        visual.StartAnimation(L"Offset", spring);
+    }
+    else {
+        visual.Offset({ 0.0f, 0.0f, 0.0f });
+    }
+}
 
 BOOL WinUIHost_IsAvailable(void)
 {
@@ -117,6 +193,35 @@ BOOL WinUIHost_Initialize(void)
     }
 
     g_bootstrap_initialized = TRUE;
+
+    try {
+        // WinUI 3 hosting requires an App SDK dispatcher on the same STA that
+        // owns Shell_TrayWnd. Create it only after bootstrap has selected the
+        // exact framework runtime.
+        g_dispatcher_queue =
+            winrt::Microsoft::UI::Dispatching::DispatcherQueueController::CreateOnCurrentThread();
+        g_xaml_manager =
+            winrt::Microsoft::UI::Xaml::Hosting::WindowsXamlManager::InitializeForCurrentThread();
+    }
+    catch (winrt::hresult_error const& error) {
+        g_last_error = WinUIHost_HResultToError(error.code());
+        g_dispatcher_queue = nullptr;
+        g_xaml_manager = nullptr;
+        MddBootstrapShutdownFn bootstrap_shutdown =
+            reinterpret_cast<MddBootstrapShutdownFn>(
+                GetProcAddress(g_bootstrap_module, "MddBootstrapShutdown"));
+        if (bootstrap_shutdown)
+            bootstrap_shutdown();
+        g_bootstrap_initialized = FALSE;
+        FreeLibrary(g_bootstrap_module);
+        g_bootstrap_module = NULL;
+        if (g_com_initialized) {
+            CoUninitialize();
+            g_com_initialized = FALSE;
+        }
+        return FALSE;
+    }
+
     g_last_error = ERROR_SUCCESS;
     g_initialized = TRUE;
     return TRUE;
@@ -127,12 +232,122 @@ BOOL WinUIHost_IsInitialized(void)
     return g_initialized;
 }
 
+BOOL WinUIHost_AttachTaskbar(HWND parent)
+{
+    if (!g_initialized || !parent) {
+        g_last_error = ERROR_NOT_READY;
+        return FALSE;
+    }
+    if (g_taskbar_source)
+        return TRUE;
+
+    try {
+        using namespace winrt::Microsoft::UI;
+        using namespace winrt::Microsoft::UI::Content;
+        using namespace winrt::Microsoft::UI::Xaml;
+        using namespace winrt::Microsoft::UI::Xaml::Controls;
+        using namespace winrt::Microsoft::UI::Xaml::Hosting;
+        using namespace winrt::Microsoft::UI::Xaml::Media;
+
+        g_taskbar_parent = parent;
+        g_taskbar_source = DesktopWindowXamlSource();
+        g_taskbar_source.Initialize(winrt::Microsoft::UI::GetWindowIdFromWindow(parent));
+
+        // A single XAML root owns the whole visible taskbar. Acrylic is hosted
+        // by WinUI; the root's solid brush is the intentional fallback if a
+        // machine's composition policy rejects the system backdrop.
+        g_taskbar_root = Grid();
+        auto root = g_taskbar_root;
+        auto acrylic = AcrylicBrush();
+        acrylic.TintColor(winrt::Windows::UI::Color{ 230, 32, 32, 32 });
+        acrylic.TintOpacity(0.78);
+        acrylic.FallbackColor(winrt::Windows::UI::Color{ 255, 32, 32, 32 });
+        root.Background(acrylic);
+
+        g_icon_strip = StackPanel();
+        auto icon_strip = g_icon_strip;
+        icon_strip.Orientation(Orientation::Horizontal);
+        icon_strip.HorizontalAlignment(HorizontalAlignment::Center);
+        icon_strip.VerticalAlignment(VerticalAlignment::Center);
+        icon_strip.Spacing(8);
+
+        Button start_button;
+        start_button.Content(winrt::box_value(L"⊞"));
+        start_button.FontSize(20);
+        start_button.Click([](auto const&, auto const&) {
+            if (g_taskbar_parent)
+                PostMessage(g_taskbar_parent, WM_COMMAND,
+                    MAKEWPARAM(WINUI_START_COMMAND_ID, 0), 0);
+        });
+        icon_strip.Children().Append(start_button);
+
+        TextBlock status;
+        status.Text(L"WinXShell");
+        status.FontSize(12);
+        status.VerticalAlignment(VerticalAlignment::Center);
+        icon_strip.Children().Append(status);
+        root.Children().Append(icon_strip);
+
+        g_taskbar_source.Content(root);
+        // DesktopAcrylicBackdrop is the supported App SDK route for the
+        // island. Keep the AcrylicBrush fallback above for systems that turn
+        // transparency off or decline a backdrop.
+        g_taskbar_source.SystemBackdrop(DesktopAcrylicBackdrop());
+
+        auto bridge = g_taskbar_source.SiteBridge().as<DesktopChildSiteBridge>();
+        g_taskbar_island = winrt::Microsoft::UI::GetWindowFromWindowId(bridge.WindowId());
+        if (!g_taskbar_island) {
+            g_last_error = ERROR_INVALID_WINDOW_HANDLE;
+            WinUIHost_ClearTaskbarSurface();
+            return FALSE;
+        }
+
+        RECT client = {};
+        GetClientRect(parent, &client);
+        WinUIHost_ResizeTaskbar(client.right - client.left, client.bottom - client.top);
+        g_last_error = ERROR_SUCCESS;
+        return TRUE;
+    }
+    catch (winrt::hresult_error const& error) {
+        g_last_error = WinUIHost_HResultToError(error.code());
+        WinUIHost_ClearTaskbarSurface();
+        return FALSE;
+    }
+}
+
+void WinUIHost_ResizeTaskbar(int width, int height)
+{
+    if (!g_taskbar_island)
+        return;
+
+    SetWindowPos(g_taskbar_island, HWND_TOP, 0, 0, width, height,
+        SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
+void WinUIHost_SetTaskbarIconAlignment(BOOL centered, BOOL animate)
+{
+    try {
+        WinUIHost_UpdateIconStripAlignment(centered, animate);
+    }
+    catch (winrt::hresult_error const& error) {
+        g_last_error = WinUIHost_HResultToError(error.code());
+    }
+}
+
+void WinUIHost_DetachTaskbar(void)
+{
+    WinUIHost_ClearTaskbarSurface();
+}
+
 void WinUIHost_Shutdown(void)
 {
     if (!g_initialized) return;
 
-    // Future island/XAML objects must be released before this point. The
-    // bootstrap runtime cannot be unloaded while WinUI objects remain alive.
+    // Release every XAML object before bootstrap unloads. The runtime cannot
+    // be unloaded safely while an island, Xaml manager, or dispatcher exists.
+    WinUIHost_DetachTaskbar();
+    g_xaml_manager = nullptr;
+    g_dispatcher_queue = nullptr;
     g_initialized = FALSE;
     if (g_bootstrap_initialized) {
         MddBootstrapShutdownFn bootstrap_shutdown =

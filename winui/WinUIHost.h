@@ -41,6 +41,25 @@ BOOL WinUIHost_Initialize(void);
 // Windows App SDK runtime.
 BOOL WinUIHost_IsInitialized(void);
 
+// Hosts the first WinUI taskbar surface inside Shell_TrayWnd. The surface is
+// deliberately opaque to legacy controls: while the WinUI renderer is active,
+// the old GDI/common-controls taskbar remains alive only as the shell bridge
+// and fallback implementation.
+BOOL WinUIHost_AttachTaskbar(HWND parent);
+
+// Keeps the island child HWND in sync with Shell_TrayWnd's client rectangle.
+// Safe to call for every WM_SIZE, including while no island is attached.
+void WinUIHost_ResizeTaskbar(int width, int height);
+
+// Applies the persisted icon-group position. When animate is TRUE, the group
+// moves with a short spring rather than snapping; callers can use FALSE while
+// constructing or restoring the taskbar.
+void WinUIHost_SetTaskbarIconAlignment(BOOL centered, BOOL animate);
+
+// Releases the hosted surface before the parent HWND or runtime disappears.
+// This must precede WinUIHost_Shutdown.
+void WinUIHost_DetachTaskbar(void);
+
 // Tears down everything brought up by WinUIHost_Initialize. Must be called
 // before bootstrap unloads, otherwise we crash on shutdown (lesson from the
 // reverted 651d666 attempt). Idempotent.
